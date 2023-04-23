@@ -52,6 +52,8 @@ def process_images(input_dir, output_dir, random_seed):
                 if not (output_subdir / 'mask').exists():
                     (output_subdir / 'mask').mkdir(parents=True)
                 output_image_path = os.path.join(output_subdir, 'stroke', filename)
+                if os.path.exists(output_image_path):
+                    continue
                 output_mask_path = os.path.join(output_subdir, 'mask', filename)
 
                 processed_image, mask = human_stroke_simulation(input_image_path)

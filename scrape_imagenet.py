@@ -97,10 +97,10 @@ def main(requested_labels):
 
 REQUESTED_LABELS = [
     'pizza',
-    'ice cream',
-    'eatery',
-    'tench',
-    'goldfish',
+    # 'ice cream',
+    # 'eatery',
+    # 'tench',
+    # 'goldfish',
 ]
 
 if __name__ == "__main__":
