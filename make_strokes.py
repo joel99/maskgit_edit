@@ -31,7 +31,7 @@ def human_stroke_simulation(image_path):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     filtered_image = median_filter(image, kernel_size=23)
-    reduced_color_image, segments = reduce_colors(filtered_image, n_colors=6)
+    reduced_color_image, segments = reduce_colors(filtered_image, n_colors=12)
 
     overlay_image, mask = overlay_stroke(image, reduced_color_image, segments)
 
