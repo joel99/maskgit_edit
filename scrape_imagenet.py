@@ -24,19 +24,27 @@ def center_crop(img, new_size):
     dx = (w - new_size) // 2
     return img[dy:dy + new_size, dx:dx + new_size]
 
-def untar_and_process_images(tar_path, dest_folder, out_dir="proc"):
+def untar_and_process_images(tar_path, dest_folder):
     with tarfile.open(tar_path, "r") as tar:
         tar.extractall(dest_folder)
 
-    if not os.path.exists(os.path.join(dest_folder, out_dir)):
-        os.makedirs(os.path.join(dest_folder, out_dir))
-
     for img_name in os.listdir(dest_folder):
+        if not img_name.endswith(".JPEG"):
+            continue
         img_path = Path(dest_folder) / img_name
         img = cv2.imread(str(img_path))
         if img is not None and img.any() and len(img.shape) == 3 and np.mean(img) < 250:
-            img = center_crop(img, (OUT_RES, OUT_RES))
-            save_path = os.path.join(dest_folder, 'proc', img_name)
+            # resize so min dim is OUT_RES
+            h, w, _ = img.shape
+            if h < w:
+                new_h = OUT_RES
+                new_w = int(w * OUT_RES / h)
+            else:
+                new_w = OUT_RES
+                new_h = int(h * OUT_RES / w)
+            img = cv2.resize(img, (new_w, new_h))
+            img = center_crop(img, OUT_RES)
+            save_path = os.path.join(dest_folder, f'proc_{img_name}')
             cv2.imwrite(save_path, img)
         os.remove(img_path)
 
@@ -60,6 +68,10 @@ def load_label_to_id_map():
     return label_to_id_map
 
 def download_file(url, output_path):
+    # check if exists and reject if so
+    if os.path.exists(output_path):
+        print(f"File already exists: {output_path}")
+        return False
     try:
         subprocess.run(["wget", "-O", output_path, url], check=True)
         return True
