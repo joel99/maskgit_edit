@@ -1,3 +1,4 @@
+from pathlib import Path
 import cv2
 import numpy as np
 from skimage import color
@@ -39,21 +40,26 @@ def human_stroke_simulation(image_path):
 def process_images(input_dir, output_dir, random_seed):
     random.seed(random_seed)
 
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    for subdir, dirs, files in os.walk(input_dir):
+        for filename in files:
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                input_image_path = os.path.join(subdir, filename)
+                relative_path = os.path.relpath(subdir, input_dir)
+                output_subdir = Path(output_dir) / relative_path
 
-    for filename in os.listdir(input_dir):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            input_image_path = os.path.join(input_dir, filename)
-            output_image_path = os.path.join(output_dir, f"{filename}_stroke")
-            output_mask_path = os.path.join(output_dir, f"{filename}_mask")
+                if not (output_subdir / 'stroke').exists():
+                    (output_subdir / 'stroke').mkdir(parents=True)
+                if not (output_subdir / 'mask').exists():
+                    (output_subdir / 'mask').mkdir(parents=True)
+                output_image_path = os.path.join(output_subdir, 'stroke', filename)
+                output_mask_path = os.path.join(output_subdir, 'mask', filename)
 
-            processed_image, mask = human_stroke_simulation(input_image_path)
+                processed_image, mask = human_stroke_simulation(input_image_path)
 
-            processed_image = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(output_image_path, processed_image)
+                processed_image = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(output_image_path, processed_image)
 
-            cv2.imwrite(output_mask_path, mask.astype(np.uint8) * 255)
+                cv2.imwrite(output_mask_path, mask.astype(np.uint8) * 255)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Human-stroke-simulation algorithm")
