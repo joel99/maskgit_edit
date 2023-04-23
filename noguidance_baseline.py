@@ -11,6 +11,7 @@ r"""
     In the model.
     4. Randomly subset the remaining tokens using the steps (model might already do this)
 """
+#%%
 import subprocess
 import numpy as np
 import jax
@@ -19,6 +20,8 @@ import os
 import itertools
 from timeit import default_timer as timer
 
+# export cuda visible devices to 2
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import maskgit
 from maskgit.utils import visualize_images, read_image_from_url, restore_from_path, draw_image_with_bbox, Bbox
 from maskgit.inference import ImageNet_class_conditional_generator
@@ -45,6 +48,7 @@ arbitrary_seed = 42
 rng = jax.random.PRNGKey(arbitrary_seed)
 
 run_mode = 'normal'  #@param ['normal', 'pmap']
+run_mode = 'pmap'  #@param ['normal', 'pmap']
 
 p_generate_256_samples = generator_256.p_generate_samples()
 # p_edit_512_samples = generator_512.p_edit_samples()
