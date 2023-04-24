@@ -37,11 +37,11 @@ def human_stroke_simulation(image_path):
 
     return overlay_image, mask
 
-def process_images(input_dir, output_dir, random_seed):
+def process_images(input_dir, output_dir, random_seed, limit=100):
     random.seed(random_seed)
 
     for subdir, dirs, files in os.walk(input_dir):
-        for filename in files:
+        for i, filename in enumerate(files):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 input_image_path = os.path.join(subdir, filename)
                 relative_path = os.path.relpath(subdir, input_dir)
@@ -62,6 +62,8 @@ def process_images(input_dir, output_dir, random_seed):
                 cv2.imwrite(output_image_path, processed_image)
 
                 cv2.imwrite(output_mask_path, mask.astype(np.uint8) * 255)
+            if i >= limit:
+                break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Human-stroke-simulation algorithm")

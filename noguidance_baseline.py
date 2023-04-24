@@ -11,7 +11,6 @@ r"""
     In the model.
     4. Randomly subset the remaining tokens using the steps (model might already do this)
 """
-#%%
 import subprocess
 import numpy as np
 import jax
@@ -19,103 +18,82 @@ import jax.numpy as jnp
 import os
 import itertools
 from timeit import default_timer as timer
+from pathlib import Path
 
-# export cuda visible devices to 2
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import maskgit
-from maskgit.utils import visualize_images, read_image_from_url, restore_from_path, draw_image_with_bbox, Bbox
+from maskgit.utils import (
+    visualize_images, read_image_from_file, restore_from_path,
+    draw_image_with_bbox, Bbox,
+    # draw_image_with_mask # TODO implement a highlight
+)
 from maskgit.inference import ImageNet_class_conditional_generator
 
-#%%
-os.makedirs("checkpoints", exist_ok=True)
-
-models_to_download = itertools.product(
-    *[ ["maskgit", "tokenizer"],   [256] ]
-)
-
-for (type_, resolution) in models_to_download:
-    canonical_path = ImageNet_class_conditional_generator.checkpoint_canonical_path(type_, resolution)
-    if os.path.isfile(canonical_path):
-        print(f"Checkpoint for {resolution} {type_} already exists, not downloading again")
-    else:
-        source_url = f'https://storage.googleapis.com/maskgit-public/checkpoints/{type_}_imagenet{resolution}_checkpoint'
-        subprocess.run(["wget", "-O", canonical_path, source_url], check=True)
+from maskgit.notebook_utils import download_if_needed, imagenet_categories
+download_if_needed()
 
 #%%
-generator_256 = ImageNet_class_conditional_generator(image_size=256)
-# generator_512 = ImageNet_class_conditional_generator(image_size=512)
+image_size = 256
+generator_256 = ImageNet_class_conditional_generator(image_size=image_size)
 arbitrary_seed = 42
 rng = jax.random.PRNGKey(arbitrary_seed)
 
 run_mode = 'normal'  #@param ['normal', 'pmap']
-run_mode = 'pmap'  #@param ['normal', 'pmap']
+# run_mode = 'pmap'  #@param ['normal', 'pmap']
 
 p_generate_256_samples = generator_256.p_generate_samples()
-# p_edit_512_samples = generator_512.p_edit_samples()
+p_edit_256_samples = generator_256.p_edit_samples()
+
 
 #%%
-# Class conditional image synthesis
-from categories import imagenet_categories
-category = imagenet_categories[0]
-label = int(category.split(')')[0])
-
-# prep the input tokens based on the chosen label
-input_tokens = generator_256.create_input_tokens_normal(label)
-pmap_input_tokens = generator_256.pmap_input_tokens(input_tokens)
-
-#%%
-# we default to 256 here which is faster
-image_size = 256
-
-# NOTE that in both run modes, subsequent re-runs tend to be much faster
-# than the initial run.
-
-rng, sample_rng = jax.random.split(rng)
-start_timer = timer()
-
-# In "normal" mode, a batch of 8 images takes a V80
-# ~25 seconds in 256x256, and ~75 seconds in 512x512.
-if run_mode == 'normal':
-    results = generator_256.generate_samples(input_tokens, sample_rng)
-elif run_mode == 'pmap':
-    sample_rngs = jax.random.split(sample_rng, jax.local_device_count())
-    results = p_generate_256_samples(pmap_input_tokens, sample_rngs)
-
-    # flatten the pmap results
-    results = results.reshape([-1, image_size, image_size, 3])
-
-end_timer = timer()
-print(f"generated {generator_256.eval_batch_size()} images in {end_timer - start_timer} seconds")
-
-# Visualize
-visualize_images(results, title=f'results')
-
-#%%
-# Class conditional image editing
 category = imagenet_categories[1]
 label = int(category.split(')')[0])
+src_image_label = label # OK, now load from
+print(src_image_label)
+gt_dir = Path('./data/imagenet') / str(src_image_label)
+src_dir = Path('./data/imagenet_stroke/') / str(src_image_label) / 'stroke'
+mask_dir = Path('./data/imagenet_stroke/') / str(src_image_label) / 'mask'
 
-#%%
-# we switch to 512 here for demo purposes
-image_size = 256
+images = list(src_dir.glob('*'))
+num_examples = 20
+fns = images[:num_examples]
+fns = fns[-1:]
+print(fns)
 
-# Feel free to change the input below to your favorite example!
-bbox_top_left_height_width = '64_32_128_144' # @param
-# bbox_top_left_height_width = '128_64_256_288' # @param
-img_url = 'https://storage.googleapis.com/maskgit-public/imgs/class_cond_input_1.png' # @param
+def get_data(fn: Path):
+    return {
+        'target': read_image_from_file(gt_dir / fn.name, height=image_size, width=image_size),
+        'stroke': read_image_from_file(src_dir / fn.name, height=image_size, width=image_size),
+        'mask': read_image_from_file(mask_dir / fn.name, height=image_size, width=image_size),
+    }
 
-bbox = Bbox(bbox_top_left_height_width)
+import matplotlib.pyplot as plt
 
-# Load the input image, and visualize it with our bounding box
-image = read_image_from_url(
-    img_url,
-    height=image_size,
-    width=image_size)
+MODE = 'bbox'
+MODE = 'mask'
 
-draw_image_with_bbox(image, bbox)
+SRC = 'target'
+# SRC = 'stroke'
 
-latent_mask, input_tokens = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
-    image, bbox, label)
+image = get_data(fns[0])[SRC]
+if MODE == 'bbox':
+    bbox_top_left_height_width = '64_32_128_144' # @param
+
+    bbox = Bbox(bbox_top_left_height_width)
+    draw_image_with_bbox(image, bbox)
+    latent_mask, input_tokens = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
+        image, bbox, label)
+else:
+    mask = get_data(fns[0])['mask']
+    latent_mask, input_tokens = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
+        image, bbox=None, target_label=label, mask=mask)
+    fig, ax = plt.subplots()
+    plt.imshow(image)
+    ax.imshow(image)
+    ax.axis("off")
+    plt.title("input")
+    plt.show()
+
+
 
 pmap_input_tokens = generator_256.pmap_input_tokens(input_tokens)
 
