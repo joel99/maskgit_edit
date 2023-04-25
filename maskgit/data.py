@@ -40,7 +40,6 @@ class JustCast(object):
 # Custom data loading function
 # We switch to pytorch since I can't figure how to get tfds working without having the tar rather than unzipped
 def get_datasets(data_dir='./data/imagenet_full'):
-    breakpoint()
     transform = transforms.Compose([
         transforms.RandomResizedCrop((256, 256)),
         JustCast()

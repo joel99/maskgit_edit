@@ -45,7 +45,7 @@ from maskgit.data import NumpyLoader, get_datasets
 
 @jax.jit
 def train_step(state: train_state.TrainState, batch, model_rng):
-    """Train for a single step. TODO move into the model class (`inference.py`) bc we need encoding step"""
+    """Train for a single step. """
     def loss_fn(params):
         logits, code_labels = state.apply_fn({'params': params}, batch, model_rng)
         loss = optax.softmax_cross_entropy(
@@ -62,21 +62,14 @@ def train_step(state: train_state.TrainState, batch, model_rng):
 
 @jax.jit
 def predict_step(state: train_state.TrainState, batch, model_rng):
-    def loss_fn(params):
-        logits, code_labels = state.apply_fn({'params': params}, batch, model_rng)
-        loss = optax.softmax_cross_entropy(
-            logits=logits, labels=code_labels).mean()
-        return loss, logits, code_labels
-    # TODO kill the value and grad
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, logits, code_labels), grads = grad_fn(state.params)
+    logits, code_labels = state.apply_fn({'params': state.params}, batch, model_rng)
+    loss = optax.softmax_cross_entropy(
+        logits=logits, labels=code_labels).mean()
     metrics = {
         'loss': loss,
         'accuracy': jnp.mean(jnp.argmax(logits, -1) == jnp.max(code_labels, -1))
     }
     return metrics
-
-
 
 def accumulate_metrics(batch_metrics: List[Dict[str, np.ndarray]]):
     return {
@@ -117,6 +110,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
         The train state (which includes the `.params`).
     """
     train_ds, test_ds = get_datasets()
+    breakpoint()
     train_dl = NumpyLoader(
         train_ds, batch_size=config.batch_size, num_workers=0,
         shuffle=True

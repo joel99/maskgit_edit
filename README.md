@@ -9,9 +9,13 @@ Also at some point protobuf gets too new for the ckpts in this lib, so downgrade
 [Also matplotlib got wrecked at some point](https://github.com/espnet/espnet/issues/4573#issuecomment-1218707672):
 `pip uninstall matplotlib`
 `pip install --no-cache-dir "matplotlib"`
-tf-ds -- ignored.
 Also we use torchvision to load imagenet, wee...
-`pip3 install torch==1.10.1+cu102 torchvision==0.11.2+cu102 -f https://download.pytorch.org/whl/cu102/torch_stable.html`
+`pip3 install torch==1.10.1+cu113 torchvision==0.11.2+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html`
+(Because tf-ds requires full tar, but my cluster happened to have untar-ed version sitting around)
+
+
+
+---
 
 Other notes:
 JAX Cuda support (assumes your device has some cuda available, replace appropriately)
