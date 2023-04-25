@@ -11,7 +11,6 @@ Also at some point protobuf gets too new for the ckpts in this lib, so downgrade
 `pip install --no-cache-dir "matplotlib"`
 Also we use torchvision to load imagenet, wee...
 `pip3 install torch==1.10.1+cu113 torchvision==0.11.2+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html`
-`pip install scikit-image` for generating stroke4s.
 (Because tf-ds requires full tar, but my cluster happened to have untar-ed version sitting around)
 
 

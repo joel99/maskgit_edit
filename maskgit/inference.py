@@ -135,15 +135,6 @@ class ImageNet_class_conditional_generator():
     def _create_input_batch(self, image):
         return np.repeat(image[None], self.maskgit_cf.eval_batch_size, axis=0).astype(np.float32)
 
-    # def _create_latent_mask_from_bbox(self, bbox):
-    #     latent_mask = np.zeros((self.maskgit_cf.eval_batch_size, self.maskgit_cf.image_size//16, self.maskgit_cf.image_size//16))
-    #     latent_t = max(0, bbox.top//16-1)
-    #     latent_b = min(self.maskgit_cf.image_size//16, bbox.height//16+bbox.top//16+1)
-    #     latent_l = max(0, bbox.left//16-1)
-    #     latent_r = min(self.maskgit_cf.image_size//16, bbox.left//16+bbox.width//16+1)
-    #     latent_mask[:, latent_t:latent_b, latent_l:latent_r] = 1
-    #     return latent_mask
-
     def _create_latent_mask_from_bbox(self, bbox):
         latent_mask = np.zeros((self.maskgit_cf.eval_batch_size,
                                 self.transformer_latent_size,
@@ -223,73 +214,3 @@ class ImageNet_class_conditional_generator():
         composit_mask = composit_mask.filter(ImageFilter.GaussianBlur(radius=self.maskgit_cf.image_size//16-1))
         composit_mask = np.float32(composit_mask)[:, :, np.newaxis] / 255.
         return outputs * composit_mask + (1-composit_mask) * imgs
-
-    # TODO apply state?
-    # TODO amp up iterations
-    def stateless_generate_tokens(self, input_tokens, rng, start_iter=0, num_iterations=1):
-        def tokens_to_logits(seq):
-            logits = self.transformer_model.apply(self.transformer_variables, seq, deterministic=True)
-            logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
-            return logits
-
-        output_tokens = parallel_decode.decode(
-                input_tokens,
-                rng,
-                tokens_to_logits,
-                num_iter=num_iterations,
-                choice_temperature=self.maskgit_cf.sample_choice_temperature,
-                mask_token_id=self.maskgit_cf.transformer.mask_token_id,
-                start_iter=start_iter,
-                )
-        # TODO check precise token logic
-        output_tokens = jnp.reshape(output_tokens[:, -1, 1:], [-1, self.transformer_latent_size, self.transformer_latent_size])
-        return output_tokens
-
-    def __call__(self, batch, rng): # or call?
-        breakpoint()
-        image, target_label = batch
-        image_tokens = self.tokenizer_model.apply(
-            self.tokenizer_variables,
-            {"image": image},
-            method=self.tokenizer_model.encode_to_indices,
-            mutable=False)
-
-        # TODO apply MVTM
-        # TODO multi-step MVTM and assert known tokens (meh, can just do that at inference)
-        # Asserting known tokens needs to be done if we want to work with stroke skyline.
-
-        # TODO Flax shouldn't need to deal with state so long as I can init correctly, but how do I do that?
-
-        image_tokens = np.reshape(image_tokens, [image_tokens.shape[0], -1])
-        initial_mask_ratio = random.uniform(rng, shape=image_tokens.shape[0])
-        latent_mask = random.bernoulli(
-            rng,
-            p=initial_mask_ratio,
-            shape=image_tokens.shape
-        )
-        masked_tokens = (1-latent_mask) * image_tokens + latent_mask * self.maskgit_cf.transformer.mask_token_id
-
-        # Create input tokens based on the category label
-        image_cls_tokens = target_label * jnp.ones([target_label.shape[0], 1])
-        # Shift the label tokens by codebook_size
-        image_cls_tokens = image_cls_tokens + self.maskgit_cf.vqvae.codebook_size
-        # Concatenate the two as input_tokens
-        input_tokens = jnp.concatenate([image_cls_tokens, masked_tokens], axis=-1)
-
-        def tokens_to_logits(seq):
-            logits = self.transformer_model.apply(self.transformer_variables, seq) # JY: killed deterministic flag hopefully that's fine
-            logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
-            return logits
-
-        output_logits = parallel_decode.decode_nondiscard(
-            input_tokens,
-            rng,
-            tokens_to_logits,
-            num_iter=1, # TODO bump,
-            choice_temperature=self.maskgit_cf.sample_choice_temperature,
-            mask_token_id=self.maskgit_cf.transformer.mask_token_id,
-            start_iter=0,
-        )
-        return output_logits, image_tokens.astype(jnp.int32)
-
-    # Matching

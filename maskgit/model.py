@@ -15,6 +15,7 @@
 import os
 import io
 import flax
+from flax import linen as nn
 import functools
 import jax
 import jax.numpy as jnp
@@ -31,14 +32,16 @@ from maskgit.nets import vqgan_tokenizer, maskgit_transformer
 from maskgit.configs import maskgit_class_cond_config
 from maskgit.libml import parallel_decode
 from maskgit.utils import restore_from_path
+from maskgit.inference import ImageNet_class_conditional_generator
 
-#TODO: this can be usedforediting aswell; justneedto pass in a different start_iter
-#TODO: perhaps move rng out of  this class?
-class ImageNet_class_conditional_generator(nn.Module):
+#TODO: compress by subclassing the og generator
+class ImageNet_class_conditional_generator_module(nn.Module):
+    transformer_model: maskgit_transformer.Transformer
+
     def checkpoint_canonical_path(maskgit_or_tokenizer, image_size):
         return f"./checkpoints/{maskgit_or_tokenizer}_imagenet{image_size}_checkpoint"
 
-    def __init__(self, image_size=256):
+    def setup(self, image_size=256):
         maskgit_cf = maskgit_class_cond_config.get_config()
         maskgit_cf.image_size = int(image_size)
         maskgit_cf.eval_batch_size = 8
@@ -50,15 +53,6 @@ class ImageNet_class_conditional_generator(nn.Module):
         self.transformer_latent_size = maskgit_cf.image_size // maskgit_cf.transformer.patch_size
         self.transformer_codebook_size = maskgit_cf.vqvae.codebook_size + maskgit_cf.num_class + 1
         self.transformer_block_size = self.transformer_latent_size ** 2 + 1
-        self.transformer_model = maskgit_transformer.Transformer(
-            vocab_size=self.transformer_codebook_size,
-            hidden_size=maskgit_cf.transformer.num_embeds,
-            num_hidden_layers=maskgit_cf.transformer.num_layers,
-            num_attention_heads=maskgit_cf.transformer.num_heads,
-            intermediate_size=maskgit_cf.transformer.intermediate_size,
-            hidden_dropout_prob=maskgit_cf.transformer.dropout_rate,
-            attention_probs_dropout_prob=maskgit_cf.transformer.dropout_rate,
-            max_position_embeddings=self.transformer_block_size)
 
         self.maskgit_cf = maskgit_cf
 
@@ -67,10 +61,27 @@ class ImageNet_class_conditional_generator(nn.Module):
     def _load_checkpoints(self):
         image_size = self.maskgit_cf.image_size
 
-        self.transformer_variables = restore_from_path(
-            ImageNet_class_conditional_generator.checkpoint_canonical_path("maskgit", image_size))
+        # self.transformer_variables = restore_from_path(
+            # ImageNet_class_conditional_generator.checkpoint_canonical_path("maskgit", image_size))
         self.tokenizer_variables = restore_from_path(
             ImageNet_class_conditional_generator.checkpoint_canonical_path("tokenizer", image_size))
+
+    @classmethod
+    def load_transformer_model_and_vars(cls, maskgit_cf):
+        transformer_latent_size = maskgit_cf.image_size // maskgit_cf.transformer.patch_size
+        transformer_codebook_size = maskgit_cf.vqvae.codebook_size + maskgit_cf.num_class + 1
+        transformer_block_size = transformer_latent_size ** 2 + 1
+        transformer_model = maskgit_transformer.Transformer(
+            vocab_size=transformer_codebook_size,
+            hidden_size=maskgit_cf.transformer.num_embeds,
+            num_hidden_layers=maskgit_cf.transformer.num_layers,
+            num_attention_heads=maskgit_cf.transformer.num_heads,
+            intermediate_size=maskgit_cf.transformer.intermediate_size,
+            hidden_dropout_prob=maskgit_cf.transformer.dropout_rate,
+            attention_probs_dropout_prob=maskgit_cf.transformer.dropout_rate,
+            max_position_embeddings=transformer_block_size)
+        return transformer_model, restore_from_path(
+            ImageNet_class_conditional_generator.checkpoint_canonical_path("maskgit", maskgit_cf.image_size))
 
     def generate_samples(self, input_tokens, rng, start_iter=0, num_iterations=16):
         def tokens_to_logits(seq):
@@ -135,87 +146,6 @@ class ImageNet_class_conditional_generator(nn.Module):
     def _create_input_batch(self, image):
         return np.repeat(image[None], self.maskgit_cf.eval_batch_size, axis=0).astype(np.float32)
 
-    # def _create_latent_mask_from_bbox(self, bbox):
-    #     latent_mask = np.zeros((self.maskgit_cf.eval_batch_size, self.maskgit_cf.image_size//16, self.maskgit_cf.image_size//16))
-    #     latent_t = max(0, bbox.top//16-1)
-    #     latent_b = min(self.maskgit_cf.image_size//16, bbox.height//16+bbox.top//16+1)
-    #     latent_l = max(0, bbox.left//16-1)
-    #     latent_r = min(self.maskgit_cf.image_size//16, bbox.left//16+bbox.width//16+1)
-    #     latent_mask[:, latent_t:latent_b, latent_l:latent_r] = 1
-    #     return latent_mask
-
-    def _create_latent_mask_from_bbox(self, bbox):
-        latent_mask = np.zeros((self.maskgit_cf.eval_batch_size,
-                                self.transformer_latent_size,
-                                self.transformer_latent_size))
-        latent_t = max(0, bbox.top // self.maskgit_cf.transformer.patch_size - 1)
-        latent_b = min(self.transformer_latent_size,
-                    bbox.height // self.maskgit_cf.transformer.patch_size + bbox.top // self.maskgit_cf.transformer.patch_size + 1)
-        latent_l = max(0, bbox.left // self.maskgit_cf.transformer.patch_size - 1)
-        latent_r = min(self.transformer_latent_size,
-                    bbox.left // self.maskgit_cf.transformer.patch_size + bbox.width // self.maskgit_cf.transformer.patch_size + 1)
-
-        latent_mask[:, latent_t:latent_b, latent_l:latent_r] = 1
-
-        return latent_mask
-
-    def _create_latent_mask_from_mask(self, mask):
-        if len(mask.shape) == 3:
-            mask = mask.any(axis=-1)
-        # unsqueeze for eval batch size
-        mask = np.repeat(mask[None], self.maskgit_cf.eval_batch_size, axis=0)
-
-        latent_mask = np.zeros((self.maskgit_cf.eval_batch_size,
-                                self.transformer_latent_size,
-                                self.transformer_latent_size))
-
-        # Downsample the input mask
-        downsampled_mask = mask.reshape(
-            self.maskgit_cf.eval_batch_size,
-            self.transformer_latent_size, self.maskgit_cf.transformer.patch_size,
-            self.transformer_latent_size, self.maskgit_cf.transformer.patch_size
-        ).any(axis=(2, 4))
-
-        # Check if any pixel in the PATCH_SIZE x PATCH_SIZE patch is masked and set the corresponding entry in the latent_mask to 1
-        latent_mask[downsampled_mask] = 1
-
-        return latent_mask
-
-    def create_latent_mask_and_input_tokens_for_image_editing(
-        self,
-        image,
-        bbox=None,
-        target_label=0,
-        mask=None, # mask matching image size indicating edited region
-    ):
-        assert bbox is not None or mask is not None, "Either bbox or mask must be provided"
-        imgs = self._create_input_batch(image)
-
-        # Encode the images into image tokens
-        image_tokens = self.tokenizer_model.apply(
-              self.tokenizer_variables,
-              {"image": imgs},
-              method=self.tokenizer_model.encode_to_indices,
-              mutable=False)
-
-        # Create the masked tokens
-        if mask is not None:
-            latent_mask = self._create_latent_mask_from_mask(mask)
-        else:
-            latent_mask = self._create_latent_mask_from_bbox(bbox)
-
-        masked_tokens = (1-latent_mask) * image_tokens + self.maskgit_cf.transformer.mask_token_id * latent_mask
-        masked_tokens = np.reshape(masked_tokens, [self.maskgit_cf.eval_batch_size, -1])
-
-        # Create input tokens based on the category label
-        label_tokens = target_label * jnp.ones([self.maskgit_cf.eval_batch_size, 1])
-        # Shift the label tokens by codebook_size
-        label_tokens = label_tokens + self.maskgit_cf.vqvae.codebook_size
-        # Concatenate the two as input_tokens
-        input_tokens = jnp.concatenate([label_tokens, masked_tokens], axis=-1)
-        return (latent_mask, input_tokens.astype(jnp.int32))
-
-
     def composite_outputs(self, input, latent_mask, outputs):
         imgs = self._create_input_batch(input)
         composit_mask = Image.fromarray(np.uint8(latent_mask[0] * 255.))
@@ -224,30 +154,9 @@ class ImageNet_class_conditional_generator(nn.Module):
         composit_mask = np.float32(composit_mask)[:, :, np.newaxis] / 255.
         return outputs * composit_mask + (1-composit_mask) * imgs
 
-    # TODO apply state?
-    # TODO amp up iterations
-    def stateless_generate_tokens(self, input_tokens, rng, start_iter=0, num_iterations=1):
-        def tokens_to_logits(seq):
-            logits = self.transformer_model.apply(self.transformer_variables, seq, deterministic=True)
-            logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
-            return logits
-
-        output_tokens = parallel_decode.decode(
-                input_tokens,
-                rng,
-                tokens_to_logits,
-                num_iter=num_iterations,
-                choice_temperature=self.maskgit_cf.sample_choice_temperature,
-                mask_token_id=self.maskgit_cf.transformer.mask_token_id,
-                start_iter=start_iter,
-                )
-        # TODO check precise token logic
-        output_tokens = jnp.reshape(output_tokens[:, -1, 1:], [-1, self.transformer_latent_size, self.transformer_latent_size])
-        return output_tokens
-
     def __call__(self, batch, rng): # or call?
-        breakpoint()
-        image, target_label = batch
+        image, target_label = batch # dtypes float and int
+        target_label = target_label[:, None]
         image_tokens = self.tokenizer_model.apply(
             self.tokenizer_variables,
             {"image": image},
@@ -258,10 +167,8 @@ class ImageNet_class_conditional_generator(nn.Module):
         # TODO multi-step MVTM and assert known tokens (meh, can just do that at inference)
         # Asserting known tokens needs to be done if we want to work with stroke skyline.
 
-        # TODO Flax shouldn't need to deal with state so long as I can init correctly, but how do I do that?
-
-        image_tokens = np.reshape(image_tokens, [image_tokens.shape[0], -1])
-        initial_mask_ratio = random.uniform(rng, shape=image_tokens.shape[0])
+        image_tokens = np.reshape(image_tokens, [image_tokens.shape[0], -1]).astype("int32")
+        initial_mask_ratio = random.uniform(rng, shape=(1,)) # whatever, broadcast throws if we try to get a random per example
         latent_mask = random.bernoulli(
             rng,
             p=initial_mask_ratio,
@@ -269,27 +176,25 @@ class ImageNet_class_conditional_generator(nn.Module):
         )
         masked_tokens = (1-latent_mask) * image_tokens + latent_mask * self.maskgit_cf.transformer.mask_token_id
 
-        # Create input tokens based on the category label
-        image_cls_tokens = target_label * jnp.ones([target_label.shape[0], 1])
         # Shift the label tokens by codebook_size
-        image_cls_tokens = image_cls_tokens + self.maskgit_cf.vqvae.codebook_size
+        image_cls_tokens = target_label + self.maskgit_cf.vqvae.codebook_size
         # Concatenate the two as input_tokens
         input_tokens = jnp.concatenate([image_cls_tokens, masked_tokens], axis=-1)
 
-        def tokens_to_logits(seq):
-            logits = self.transformer_model.apply(self.transformer_variables, seq) # JY: killed deterministic flag hopefully that's fine
-            logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
-            return logits
-
-        output_logits = parallel_decode.decode_nondiscard(
+        if self.transformer_model.is_mutable_collection("params"):
+            # TODO: low pri - this is redundantly called everytime. How can I just call it once for init? (We need to do a proper init despite pretraining bc model.init must be called before we can transfer in weights)
+            init_vars = self.transformer_model(input_tokens) # https://flax.readthedocs.io/en/latest/api_reference/_autosummary/flax.linen.while_loop.html - consider initializing before
+        output_logits = parallel_decode.decode_nondiscard_flax(
             input_tokens,
             rng,
-            tokens_to_logits,
+            self.transformer_model,
+            codebook_size=self.maskgit_cf.vqvae.codebook_size, # this is the codebook of the logits we care about (transformer also predicts logits for imagenet classes)
             num_iter=1, # TODO bump,
             choice_temperature=self.maskgit_cf.sample_choice_temperature,
             mask_token_id=self.maskgit_cf.transformer.mask_token_id,
             start_iter=0,
         )
-        return output_logits, image_tokens.astype(jnp.int32)
+        output_logits = output_logits[:, 1:] # since class label is first token
+        return output_logits, image_tokens, latent_mask # initial mask
 
     # Matching
