@@ -71,8 +71,8 @@ import matplotlib.pyplot as plt
 MODE = 'bbox'
 MODE = 'mask'
 
-SRC = 'target'
-# SRC = 'stroke'
+# SRC = 'target'
+SRC = 'stroke'
 
 image = get_data(fns[0])[SRC]
 if MODE == 'bbox':

@@ -222,3 +222,27 @@ class ImageNet_class_conditional_generator():
         composit_mask = composit_mask.filter(ImageFilter.GaussianBlur(radius=self.maskgit_cf.image_size//16-1))
         composit_mask = np.float32(composit_mask)[:, :, np.newaxis] / 255.
         return outputs * composit_mask + (1-composit_mask) * imgs
+
+    # TODO implement these
+    def apply(self, batch, rng):
+        image, target_label = batch
+        image_tokens = self.tokenizer_model.apply(
+            self.tokenizer_variables,
+            {"image": image},
+            method=self.tokenizer_model.encode_to_indices,
+            mutable=False)
+
+        # TODO something about masking with rng
+        masked_tokens = (1-latent_mask) * image_tokens + self.maskgit_cf.transformer.mask_token_id * latent_mask
+        masked_tokens = np.reshape(masked_tokens, [self.maskgit_cf.eval_batch_size, -1])
+
+        # Create input tokens based on the category label
+        image_cls_tokens = target_label * jnp.ones([self.maskgit_cf.eval_batch_size, 1])
+        # Shift the label tokens by codebook_size
+        image_cls_tokens = image_cls_tokens + self.maskgit_cf.vqvae.codebook_size
+        # Concatenate the two as input_tokens
+        input_tokens = jnp.concatenate([image_cls_tokens, masked_tokens], axis=-1)
+        # return (latent_mask, input_tokens.astype(jnp.int32))
+
+        # TODO return logits and vq-labels themselves.
+        return logits, image_tokens
