@@ -24,6 +24,7 @@ r"""
 # See issue #620.
 # pytype: disable=wrong-keyword-args
 import os
+import shutil
 from typing import Dict, List
 import argparse
 from pathlib import Path
@@ -32,11 +33,13 @@ from flax import linen as nn
 from flax.training import train_state
 import jax
 import jax.numpy as jnp
+
 import ml_collections
 import numpy as np
 import optax
 # import tensorflow_datasets as tfds
 import wandb
+import orbax.checkpoint
 
 from maskgit.nets import vqgan_tokenizer, maskgit_transformer
 from maskgit.configs import maskgit_class_cond_config
@@ -44,7 +47,11 @@ from maskgit.model import ImageNet_class_conditional_generator_module
 from maskgit.data import NumpyLoader, get_datasets
 from maskgit.libml.losses import weighted_sequence_cross_entropy_loss
 
-# @jax.jit
+# jax.distributed.initialize()
+# print(f"Total devices: {jax.device_count()}, "
+#       f"Devices per task: {jax.local_device_count()}")
+
+@jax.jit
 def train_step(state: train_state.TrainState, batch, model_rng):
     """Train for a single step. """
     def loss_fn(params):
@@ -60,47 +67,62 @@ def train_step(state: train_state.TrainState, batch, model_rng):
         return loss, (logits, code_labels)
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     outs, grads = grad_fn(state.params)
-    breakpoint()
     loss, (logits, code_labels) = outs
     state = state.apply_gradients(grads=grads)
     metrics = {
         'loss': loss,
-        'accuracy': jnp.mean(jnp.argmax(logits, -1) == jnp.max(code_labels, -1))
+        'accuracy': jnp.mean(jnp.argmax(logits, -1) == code_labels)
     }
     return state, metrics
 
 @jax.jit
 def predict_step(state: train_state.TrainState, batch, model_rng):
     logits, code_labels, init_mask = state.apply_fn({'params': state.params}, batch, model_rng)
-    loss = optax.softmax_cross_entropy(
-        logits=logits, labels=code_labels).mean()
+    loss = weighted_sequence_cross_entropy_loss(
+        labels=code_labels,
+        logits=logits,
+        weights=init_mask.astype(jnp.float32),
+        label_smoothing=0.1,
+    ).mean()
     metrics = {
         'loss': loss,
-        'accuracy': jnp.mean(jnp.argmax(logits, -1) == jnp.max(code_labels, -1))
+        'accuracy': jnp.mean(jnp.argmax(logits, -1) == code_labels)
     }
     return metrics
 
 def accumulate_metrics(batch_metrics: List[Dict[str, np.ndarray]]):
     return {
-        k: jnp.mean([metrics[k] for metrics in batch_metrics]) \
+        k: jnp.mean(jnp.array([metrics[k] for metrics in batch_metrics])) \
             for k in batch_metrics[0].keys()
     }
 
-def train_epoch(state, train_dl, model_rng):
+def train_epoch(state, train_dl, model_rng, global_step=0):
     train_batch_metrics = []
-    for batch in train_dl:
+    for i, batch in enumerate(train_dl):
         state, metrics = train_step(state, batch, model_rng)
+        if global_step + i % 10 == 0:
+            logging.info('train step %d: %s', global_step + i, metrics)
+            wandb.log({
+                'train/loss': metrics['loss'],
+                'train/accuracy': metrics['accuracy'],
+            }, step=global_step + i)
         train_batch_metrics.append(metrics)
+        if i > 10:
+            break # testing checkpointing.
     train_batch_metrics = accumulate_metrics(train_batch_metrics)
 
-    return state, train_batch_metrics
+    return state, train_batch_metrics, global_step
 
-def test_epoch(state, test_dl, model_rng):
+def test_epoch(state, test_dl, model_rng, global_step=0):
     test_batch_metrics = []
     for batch in test_dl:
         metrics = predict_step(state, batch, model_rng)
         test_batch_metrics.append(metrics)
     test_batch_metrics = accumulate_metrics(test_batch_metrics)
+    wandb.log({
+        'val/loss': metrics['loss'],
+        'val/accuracy': metrics['accuracy'],
+    }, step=global_step)
     return test_batch_metrics
 
 # https://flax.readthedocs.io/en/latest/guides/transfer_learning.html
@@ -114,11 +136,26 @@ def create_train_state(rng, config, model: ImageNet_class_conditional_generator_
     variables = model.init(init_rng, x, call_rng)
     params = variables['params']
     params = params.unfreeze()
-    params['transformer_model'] = pt_vars['params']
+    # params['transformer_model'] = pt_vars['params']
     params = freeze(params)
     tx = optax.adamw(config.optimizer.lr, b1=config.optimizer.beta1, b2=config.optimizer.beta2, weight_decay=config.optimizer.weight_decay)
     return train_state.TrainState.create(
         apply_fn=model.apply, params=params, tx=tx)
+
+def init_ckpts(config: ml_collections.ConfigDict):
+    ckpt_path = Path(config.checkpoint_dir) / wandb.run.name
+    if ckpt_path.exists():
+        shutil.rmtree(ckpt_path)
+    ckpt_path.mkdir(parents=True)
+    mngr = orbax.checkpoint.CheckpointManager(
+        ckpt_path,
+        orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
+    )
+    return mngr
+
+def do_ckpt(mngr, step, state):
+    mngr.save(step, state)
+    breakpoint()
 
 def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainState:
     """Execute model training and evaluation loop.
@@ -140,40 +177,39 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
 
     rng = jax.random.PRNGKey(config.seed)
 
-    # wandb.init(
-    #     project="maskgit_edit",
-    #     job_type="tune",
-    #     config=config.to_dict(),
-    # )
+    wandb.init(
+        project="maskgit_edit",
+        job_type="tune",
+        config=config.to_dict(),
+    )
+    wandb.run.name = f"{config.tag}_{wandb.run.id}"
 
     rng, init_rng = jax.random.split(rng)
     transformer, transformer_vars = ImageNet_class_conditional_generator_module.load_transformer_model_and_vars(config)
     model = ImageNet_class_conditional_generator_module(transformer)
     state = create_train_state(init_rng, config, model, transformer_vars)
 
+    best_loss = 1e9
+    step = 0
+    mngr = init_ckpts(config)
+
     for epoch in range(1, config.num_epochs + 1):
         rng, model_rng = jax.random.split(rng)
-        state, train_loss, train_accuracy = train_epoch(state, train_dl, model_rng)
-        test_loss, test_accuracy = test_epoch(state, test_dl, model_rng)
+        state, train_metrics, step = train_epoch(state, train_dl, model_rng, global_step=step)
+        test_metrics = test_epoch(state, test_dl, model_rng)
 
-        logging.info(
-            'epoch:% 3d, train_loss: %.4f, train_accuracy: %.2f, test_loss: %.4f, test_accuracy: %.2f'
-            % (epoch, train_loss, train_accuracy * 100, test_loss,
-            test_accuracy * 100)
-        )
-        wandb.log({
-            "Train Loss": train_loss,
-            "Train Accuracy": train_accuracy,
-            "Validation Loss": test_loss,
-            "Validation Accuracy": test_accuracy
-        }, step=epoch)
+        if test_metrics['loss'] < best_loss:
+            best_loss = test_metrics['loss']
+            do_ckpt(mngr, state)
+            logging.info(f"Saved checkpoint at step {step} val loss: {best_loss:.4f} acc: {test_metrics['loss']:.2f}")
 
     return state
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Training and evaluation script for maskgit_class_cond model")
 
-    parser.add_argument("--batch_size", "-bs", type=int, default=32, help="Batch size for training and evaluation")
+    parser.add_argument("--batch_size", "-bs", type=int, default=4, help="Batch size for training and evaluation")
+    parser.add_argument("--tag", "-t", type=str, default="default", help="Tag for wandb logging")
 
     return parser.parse_args()
 
@@ -182,6 +218,7 @@ def main():
 
     cf = maskgit_class_cond_config.get_config()
     cf.batch_size = args.batch_size
+    cf.tag = args.tag
 
     train_and_evaluate(cf)
 

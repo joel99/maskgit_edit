@@ -184,7 +184,7 @@ class ImageNet_class_conditional_generator_module(nn.Module):
         if self.transformer_model.is_mutable_collection("params"):
             # TODO: low pri - this is redundantly called everytime. How can I just call it once for init? (We need to do a proper init despite pretraining bc model.init must be called before we can transfer in weights)
             init_vars = self.transformer_model(input_tokens) # https://flax.readthedocs.io/en/latest/api_reference/_autosummary/flax.linen.while_loop.html - consider initializing before
-        output_logits = parallel_decode.decode_nondiscard_flax(
+        output_logits = parallel_decode.decode_logit_flax_scan(
             input_tokens,
             rng,
             self.transformer_model,

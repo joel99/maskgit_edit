@@ -48,6 +48,8 @@ def get_config():
 
   # JY: preferring epochs over steps for fine-tuning
   config.num_epochs = 10
+  config.checkpoint_dir = 'checkpoints'
+  config.tag = 'default'
 
   config.optimizer = ml_collections.ConfigDict()
   config.optimizer.type = "adam"

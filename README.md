@@ -12,7 +12,8 @@ Also at some point protobuf gets too new for the ckpts in this lib, so downgrade
 Also we use torchvision to load imagenet, wee...
 `pip3 install torch==1.10.1+cu113 torchvision==0.11.2+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html`
 (Because tf-ds requires full tar, but my cluster happened to have untar-ed version sitting around)
-
+For just a standard torch with cuda 11.7 (latest as of writing)
+`pip3 install torch torchvision torchaudio`
 
 
 ---
