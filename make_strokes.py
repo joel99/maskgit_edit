@@ -37,7 +37,7 @@ def human_stroke_simulation(image_path):
 
     return overlay_image, mask
 
-def process_images(input_dir, output_dir, random_seed, limit=100):
+def process_images(input_dir, output_dir, random_seed, limit=50):
     random.seed(random_seed)
 
     for subdir, dirs, files in os.walk(input_dir):
@@ -54,20 +54,21 @@ def process_images(input_dir, output_dir, random_seed, limit=100):
                 output_image_path = os.path.join(output_subdir, 'stroke', filename)
                 if os.path.exists(output_image_path):
                     continue
-                output_mask_path = os.path.join(output_subdir, 'mask', filename)
+                output_mask_path = os.path.join(output_subdir, 'mask', f'{Path(filename).stem}.png')
 
                 processed_image, mask = human_stroke_simulation(input_image_path)
 
                 processed_image = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(output_image_path, processed_image)
-
                 cv2.imwrite(output_mask_path, mask.astype(np.uint8) * 255)
+                # IMREAD: cv2.imread(output_mask_path, cv2.IMREAD_GRAYSCALE)
+                # Make sure you use cv2 to imread.
             if i >= limit:
                 break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Human-stroke-simulation algorithm")
-    parser.add_argument("-i", "--input-dir", type=str, default="./data/imagenet", help="Input directory containing images")
+    parser.add_argument("-i", "--input-dir", type=str, default="./data/imagenet_full", help="Input directory containing images")
     parser.add_argument("-o", "--output-dir", type=str, default="./data/imagenet_stroke", help="Output directory for processed images and masks")
     parser.add_argument("-r", "--random-seed", type=int, default=42, help="Random seed for stroke generation")
 
