@@ -34,7 +34,7 @@ from maskgit.utils import restore_from_path
 
 #TODO: this can be usedforediting aswell; justneedto pass in a different start_iter
 #TODO: perhaps move rng out of  this class?
-class ImageNet_class_conditional_generator():
+class ImageNet_class_conditional_generator(nn.Module):
     def checkpoint_canonical_path(maskgit_or_tokenizer, image_size):
         return f"./checkpoints/{maskgit_or_tokenizer}_imagenet{image_size}_checkpoint"
 

@@ -115,6 +115,7 @@ def decode(inputs,
 
   def loop_body_fn(state):
     """Beam search loop state update function."""
+    breakpoint() # TODO Honestly can't understand this without stepping, but I need to actually return logits at some point
     rng = state.rng
     step = state.cur_index
     # Current input ids: [batch_size, seq_length].
@@ -169,3 +170,8 @@ def decode(inputs,
   final_state = lax.while_loop(loop_cond_fn, loop_body_fn, init_state)
   return final_state.final_seqs
 
+
+def decode_nondiscard(
+  *args, **kwargs
+):
+  return decode(*args, **kwargs)

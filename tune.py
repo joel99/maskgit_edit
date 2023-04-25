@@ -46,6 +46,7 @@ from maskgit.data import NumpyLoader, get_datasets
 @jax.jit
 def train_step(state: train_state.TrainState, batch, model_rng):
     """Train for a single step. """
+    breakpoint()
     def loss_fn(params):
         logits, code_labels = state.apply_fn({'params': params}, batch, model_rng)
         loss = optax.softmax_cross_entropy(
@@ -77,10 +78,10 @@ def accumulate_metrics(batch_metrics: List[Dict[str, np.ndarray]]):
             for k in batch_metrics[0].keys()
     }
 
-def train_epoch(state, train_dl):
+def train_epoch(state, train_dl, model_rng):
     train_batch_metrics = []
     for batch in train_dl:
-        state, metrics = train_step(state, batch)
+        state, metrics = train_step(state, batch, model_rng)
         train_batch_metrics.append(metrics)
     train_batch_metrics = accumulate_metrics(train_batch_metrics)
 
@@ -96,9 +97,10 @@ def test_epoch(state, test_dl, model_rng):
 
 def create_train_state(rng, config, model: ImageNet_class_conditional_generator):
     """Creates initial `TrainState`."""
-    tx = optax.adamw(config.learning_rate)
+    # JY: base training has warmup and standard things but we're fine-tuning, hopefully this works without those complications
+    tx = optax.adamw(config.optimizer.lr, b1=config.optimizer.beta1, b2=config.optimizer.beta2, weight_decay=config.optimizer.weight_decay)
     return train_state.TrainState.create(
-        apply_fn=model.apply, params=model.transformer_variables, tx=tx)
+        apply_fn=model.apply, params=model.transformer_variables['params'], tx=tx)
 
 def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainState:
     """Execute model training and evaluation loop.
@@ -110,22 +112,21 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
         The train state (which includes the `.params`).
     """
     train_ds, test_ds = get_datasets()
-    breakpoint()
     train_dl = NumpyLoader(
-        train_ds, batch_size=config.batch_size, num_workers=0,
+        train_ds, batch_size=config.batch_size, num_workers=8,
         shuffle=True
-    ) # TODO up
-    test_dl = NumpyLoader(
-        test_ds, batch_size=config.batch_size, num_workers=0
-    ) # TODO up
-
-    rng = jax.random.PRNGKey(0)
-
-    wandb.init(
-        project="maskgit_edit",
-        job_type="tune",
-        config=config.to_dict(),
     )
+    test_dl = NumpyLoader(
+        test_ds, batch_size=config.batch_size, num_workers=1
+    )
+
+    rng = jax.random.PRNGKey(config.seed)
+
+    # wandb.init(
+    #     project="maskgit_edit",
+    #     job_type="tune",
+    #     config=config.to_dict(),
+    # )
 
     rng, init_rng = jax.random.split(rng)
     model = ImageNet_class_conditional_generator()

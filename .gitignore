@@ -1,4 +1,5 @@
 data
 checkpoints
+wandb
 
 __pycache__

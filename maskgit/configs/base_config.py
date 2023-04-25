@@ -46,6 +46,9 @@ def get_config():
   config.eval_show_num = 16
   config.checkpoint_every_steps = 10_000
 
+  # JY: preferring epochs over steps for fine-tuning
+  config.num_epochs = 10
+
   config.optimizer = ml_collections.ConfigDict()
   config.optimizer.type = "adam"
   config.optimizer.lr = 0.0001
