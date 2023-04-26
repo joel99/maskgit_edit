@@ -72,7 +72,7 @@ def train_step(state: train_state.TrainState, batch, model_rng):
             ).mean()
             return loss, (logits, code_labels)
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-        outs, grads = jax.pmap(grad_fn, axis_name='batch')(state.params)
+        outs, grads = grad_fn(state.params)
         loss, (logits, code_labels) = outs
         # reduce gradients first so we save memory when it comes time to apply gradients?
         grads = jax.lax.pmean(grads, axis_name='batch')
