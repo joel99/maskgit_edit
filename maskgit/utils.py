@@ -28,15 +28,20 @@ import tensorflow.compat.v1 as tf
 
 def visualize_images(images, title='', figsize=(30, 6)):
   batch_size, height, width, c = images.shape
-  images = images.swapaxes(0, 1)
-  image_grid = images.reshape(height, batch_size*width, c)
+  n_rows = int(math.sqrt(batch_size))
+  n_cols = math.ceil(batch_size / n_rows)
 
-  image_grid = np.clip(image_grid, 0, 1)
+  fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+  axes = axes.flatten()
 
-  plt.figure(figsize=figsize)
-  plt.imshow(image_grid)
-  plt.axis("off")
-  plt.title(title)
+  for idx, (image, ax) in enumerate(zip(images, axes)):
+      image = np.clip(image, 0, 1)
+      ax.imshow(image)
+      ax.axis("off")
+
+  plt.suptitle(title)
+  plt.tight_layout()
+  plt.show()
 
 def read_image_from_url(url, height=None, width=None):
   resp = requests.get(url)
@@ -48,7 +53,9 @@ def read_image_from_url(url, height=None, width=None):
     pil_image = pil_image.resize((width, height), Image.BICUBIC)
   return np.float32(pil_image) / 255.
 
-def read_image_from_file(path, height=None, width=None):
+def read_image_from_file(path, height=None, width=None, ext=None):
+  if ext is not None:
+    path = path.parent / f'{path.stem}.{ext}'
   pil_image = Image.open(path).convert('RGB')
   img_width, img_height = pil_image.size
   if height is not None and width is not None:

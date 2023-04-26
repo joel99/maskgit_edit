@@ -6,7 +6,6 @@ Quick scrape for imagenet subset, since the large one is out of scope for me.
 JY edits:
 1. 224 -> 256 resolution
 """
-import ast
 from pathlib import Path
 import os
 import json
@@ -16,6 +15,8 @@ import subprocess
 from tqdm import tqdm
 import cv2
 import numpy as np
+
+from maskgit.notebook_utils import load_label_to_id_and_class_map
 
 OUT_RES = 256
 def center_crop(img, new_size):
@@ -47,27 +48,6 @@ def untar_and_process_images(tar_path, dest_folder):
             save_path = os.path.join(dest_folder, f'proc_{img_name}')
             cv2.imwrite(save_path, img)
         os.remove(img_path)
-
-def load_label_to_id_and_class_map():
-    label_to_id_map = {}
-    label_to_class_map = {}
-    with open("./resources/imagenet_label_synset.txt") as f:
-        r"""
-            e.g.
-            {0: {'id': '01440764-n',
-                'label': 'tench, Tinca tinca',
-                'uri': 'http://wordnet-rdf.princeton.edu/wn30/01440764-n'},
-            1: {'id': '01443537-n',
-                'label': 'goldfish, Carassius auratus',
-                'uri': 'http://wordnet-rdf.princeton.edu/wn30/01443537-n'},
-        """
-        content = f.read()
-        payload = ast.literal_eval(content)
-        for syn_cls, info in payload.items():
-            for label in info["label"].split(","):
-                label_to_id_map[label.strip().lower()] = info["id"][:-2]
-                label_to_class_map[label.strip().lower()] = syn_cls
-    return label_to_id_map, label_to_class_map
 
 def download_file(url, output_path):
     # check if exists and reject if so

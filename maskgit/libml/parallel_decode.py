@@ -70,7 +70,6 @@ class State:
 class StateWithLogits(State):
   logits: jnp.DeviceArray  # float32 [batch, seq_len, vocab_size]
 
-
 def state_init(init_indices, rng, num_iter, start_iter=0):
   """Initializes the decoding state data structure."""
   cur_index0 = jnp.array(start_iter)
@@ -89,6 +88,7 @@ def state_init_with_logits(init_indices, rng, num_iter, codebook_size, start_ite
   logits = jnp.zeros((init_indices.shape[0], init_indices.shape[1], codebook_size))
   return StateWithLogits(
       cur_index=cur_index0, cur_seqs=cur_seqs0, rng=rng, final_seqs=final_seqs0, logits=logits)
+
 
 def decode(inputs,
            rng,
@@ -179,6 +179,88 @@ def decode(inputs,
         cur_seqs=sampled_ids,
         rng=rng,
         final_seqs=final_seqs)
+
+  # Run while loop and get final beam search state.
+  final_state = lax.while_loop(loop_cond_fn, loop_body_fn, init_state)
+  return final_state.final_seqs
+
+
+def decode_sample_guidance(inputs,
+           guidance, # unmasked
+           rng,
+           tokens_to_logits,
+           mask_token_id=-1,
+           num_iter=12,
+           start_iter=0,
+           choice_temperature=1.0,
+           mask_scheduling_method="cosine"):
+  """
+  We want to decode while conditioning on user guidance.
+  We still use the schedule, but use it to determine a priori how many tokens to mask and keep the rest of input as context.
+  """
+  inputs = inputs.astype("int32")
+  guidance = guidance.astype("int32")
+  unknown_number_in_the_beginning = jnp.sum(inputs == mask_token_id, axis=-1)
+  # Initializes state
+  init_state = state_init(inputs, rng, num_iter, start_iter=start_iter)
+
+  def loop_cond_fn(state):
+    """Beam search loop termination condition."""
+    not_at_end = (state.cur_index < num_iter)
+    return not_at_end
+
+  def loop_body_fn(state):
+    """Beam search loop state update function."""
+    rng = state.rng
+    step = state.cur_index
+    # Current input ids: [batch_size, seq_length].
+    cur_ids = state.cur_seqs
+
+    # Calls model on current seqs to get next-iteration seqs.
+    logits = tokens_to_logits(cur_ids)
+    rng, sample_rng = jax.random.split(rng, 2)
+    # Samples the ids using categorical sampling: [batch_size, seq_length].
+    sampled_ids = jax.random.categorical(sample_rng, logits)
+
+    # Just updates the masked tokens.
+    unknown_map = (cur_ids == mask_token_id)
+    sampled_ids = jnp.where(unknown_map, sampled_ids, cur_ids)
+    # Defines the mask ratio for the next round. The number to mask out is
+    # determined by mask_ratio * unknown_number_in_the_beginning.
+    ratio = 1. * (step + 1) / num_iter
+    mask_ratio = mask_schedule.schedule(ratio, unknown_number_in_the_beginning,
+                                        mask_scheduling_method)
+    # Updates final seqs with the current sampled_ids.
+    final_seqs = jax.lax.dynamic_update_slice(
+        state.final_seqs, jnp.expand_dims(sampled_ids, axis=1), (0, step, 0))
+    # Computes the probabilities of each selected tokens.
+    probs = jax.nn.softmax(logits, axis=-1)
+    selected_probs = jnp.squeeze(
+        jnp.take_along_axis(probs, jnp.expand_dims(sampled_ids.astype(jnp.int32), -1), -1), -1)
+    # Ignores the tokens given in the input by overwriting their confidence.
+    selected_probs = jnp.where(unknown_map, selected_probs,
+                               _CONFIDENCE_OF_KNOWN_TOKENS)
+    # Gets mask lens for each sample in the batch according to the mask ratio.
+    mask_len = jnp.expand_dims(
+        jnp.floor(unknown_number_in_the_beginning * mask_ratio), 1)
+    # Keeps at least one of prediction in this round and also masks out at least
+    # one and for the next iteration
+    mask_len = jnp.maximum(
+        1,
+        jnp.minimum(jnp.sum(unknown_map, axis=-1, keepdims=True) - 1, mask_len))
+
+    # Adds noise for randomness
+    rng, choice_rng = jax.random.split(rng)
+    masking = mask_by_random_topk(choice_rng, mask_len, selected_probs,
+                                  choice_temperature * (1. - ratio))
+    # Masks tokens with lower confidence.
+    sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
+    return State(
+        cur_index=state.cur_index + 1,
+        cur_seqs=sampled_ids,
+        rng=rng,
+        final_seqs=final_seqs,
+        )
 
   # Run while loop and get final beam search state.
   final_state = lax.while_loop(loop_cond_fn, loop_body_fn, init_state)

@@ -19,6 +19,7 @@ import os
 import itertools
 from timeit import default_timer as timer
 from pathlib import Path
+import matplotlib.pyplot as plt
 
 import maskgit
 from maskgit.utils import (
@@ -28,12 +29,15 @@ from maskgit.utils import (
 )
 from maskgit.inference import ImageNet_class_conditional_generator
 
-from maskgit.notebook_utils import download_if_needed, imagenet_categories
+from maskgit.notebook_utils import (
+    download_if_needed, imagenet_categories, load_class_to_id_map
+)
 download_if_needed()
 
 #%%
 image_size = 256
 generator_256 = ImageNet_class_conditional_generator(image_size=image_size)
+generator_256.maskgit_cf.eval_batch_size = 4
 arbitrary_seed = 42
 rng = jax.random.PRNGKey(arbitrary_seed)
 
@@ -43,15 +47,17 @@ run_mode = 'normal'  #@param ['normal', 'pmap']
 p_generate_256_samples = generator_256.p_generate_samples()
 p_edit_256_samples = generator_256.p_edit_samples()
 
-
+category_class_to_id = load_class_to_id_map()
 #%%
 category = imagenet_categories[1]
 label = int(category.split(')')[0])
-src_image_label = label # OK, now load from
-print(src_image_label)
-gt_dir = Path('./data/imagenet') / str(src_image_label)
-src_dir = Path('./data/imagenet_stroke/') / str(src_image_label) / 'stroke'
-mask_dir = Path('./data/imagenet_stroke/') / str(src_image_label) / 'mask'
+
+category_id_pth = f'n{category_class_to_id[label]}'
+split = 'val'
+
+gt_dir = Path('./data/imagenet_full') / split / category_id_pth
+src_dir = Path('./data/imagenet_stroke/') / split  / category_id_pth / 'stroke'
+mask_dir = Path('./data/imagenet_stroke/') / split / category_id_pth / 'mask'
 
 images = list(src_dir.glob('*'))
 num_examples = 20
@@ -63,10 +69,9 @@ def get_data(fn: Path):
     return {
         'target': read_image_from_file(gt_dir / fn.name, height=image_size, width=image_size),
         'stroke': read_image_from_file(src_dir / fn.name, height=image_size, width=image_size),
-        'mask': read_image_from_file(mask_dir / fn.name, height=image_size, width=image_size),
+        'mask': read_image_from_file(mask_dir / fn.name, height=image_size, width=image_size, ext='png'),
     }
 
-import matplotlib.pyplot as plt
 
 MODE = 'bbox'
 MODE = 'mask'
@@ -90,10 +95,8 @@ else:
     plt.imshow(image)
     ax.imshow(image)
     ax.axis("off")
-    plt.title("input")
+    plt.title(category)
     plt.show()
-
-
 
 pmap_input_tokens = generator_256.pmap_input_tokens(input_tokens)
 
@@ -122,4 +125,5 @@ elif run_mode == 'pmap':
 composite_images = generator_256.composite_outputs(image, latent_mask, results)
 
 #-----------------------
-visualize_images(composite_images, title=f'outputs')
+visualize_images(composite_images, figsize=(12, 12))
+# visualize_images(composite_images, title=f'outputs')

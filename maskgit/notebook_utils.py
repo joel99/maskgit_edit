@@ -1,7 +1,39 @@
+import ast
 import os
 import itertools
 import subprocess
 from maskgit.inference import ImageNet_class_conditional_generator
+
+def load_label_to_id_and_class_map():
+    label_to_id_map = {}
+    label_to_class_map = {}
+    with open("./resources/imagenet_label_synset.txt") as f:
+        r"""
+            e.g.
+            {0: {'id': '01440764-n',
+                'label': 'tench, Tinca tinca',
+                'uri': 'http://wordnet-rdf.princeton.edu/wn30/01440764-n'},
+            1: {'id': '01443537-n',
+                'label': 'goldfish, Carassius auratus',
+                'uri': 'http://wordnet-rdf.princeton.edu/wn30/01443537-n'},
+        """
+        content = f.read()
+        payload = ast.literal_eval(content)
+        for syn_cls, info in payload.items():
+            for label in info["label"].split(","):
+                label_to_id_map[label.strip().lower()] = info["id"][:-2]
+                label_to_class_map[label.strip().lower()] = syn_cls
+    return label_to_id_map, label_to_class_map
+
+def load_class_to_id_map():
+    class_to_id_map = {}
+    with open("./resources/imagenet_label_synset.txt") as f:
+        content = f.read()
+        payload = ast.literal_eval(content)
+        for syn_cls, info in payload.items():
+            class_to_id_map[syn_cls] = info["id"][:-2]
+    return class_to_id_map
+
 
 def download_if_needed():
     os.makedirs("checkpoints", exist_ok=True)
