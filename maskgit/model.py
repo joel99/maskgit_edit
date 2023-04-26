@@ -156,6 +156,10 @@ class ImageNet_class_conditional_generator_module(nn.Module):
 
     def __call__(self, batch, rng): # or call?
         image, target_label = batch # dtypes float and int
+        # This makes no sense to me, but if pmap isn't killing the device dimension, we have to flatten it back
+        if len(image.shape) == 5:
+            image = np.reshape(image, [image.shape[0] * image.shape[1], *image.shape[2:]])
+            target_label = np.reshape(target_label, [target_label.shape[0] * target_label.shape[1]])
         target_label = target_label[:, None]
         image_tokens = self.tokenizer_model.apply(
             self.tokenizer_variables,
@@ -163,7 +167,6 @@ class ImageNet_class_conditional_generator_module(nn.Module):
             method=self.tokenizer_model.encode_to_indices,
             mutable=False)
 
-        # TODO apply MVTM
         # TODO multi-step MVTM and assert known tokens (meh, can just do that at inference)
         # Asserting known tokens needs to be done if we want to work with stroke skyline.
 

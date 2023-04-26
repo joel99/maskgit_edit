@@ -25,12 +25,14 @@ r"""
 # pytype: disable=wrong-keyword-args
 import os
 import shutil
+import functools
 from typing import Dict, List
 import argparse
 from pathlib import Path
 from absl import logging
 from flax import linen as nn
 from flax.training import train_state
+import flax.jax_utils as jax_utils
 import jax
 import jax.numpy as jnp
 
@@ -47,33 +49,44 @@ from maskgit.model import ImageNet_class_conditional_generator_module
 from maskgit.data import NumpyLoader, get_datasets
 from maskgit.libml.losses import weighted_sequence_cross_entropy_loss
 
-# jax.distributed.initialize()
-# print(f"Total devices: {jax.device_count()}, "
-#       f"Devices per task: {jax.local_device_count()}")
+print(f"Total devices: {jax.device_count()}, "
+      f"Devices per task: {jax.local_device_count()}")
 
-@jax.jit
+# @jax.jit
 def train_step(state: train_state.TrainState, batch, model_rng):
     """Train for a single step. """
-    def loss_fn(params):
-        logits, code_labels, init_mask = state.apply_fn({'params': params}, batch, model_rng)
-        # loss = optax.softmax_cross_entropy(
-        #     logits=logits, labels=code_labels).mean()
-        loss = weighted_sequence_cross_entropy_loss(
-            labels=code_labels,
-            logits=logits,
-            weights=init_mask.astype(jnp.float32),
-            label_smoothing=0.1,
-        ).mean()
-        return loss, (logits, code_labels)
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    outs, grads = grad_fn(state.params)
-    loss, (logits, code_labels) = outs
-    state = state.apply_gradients(grads=grads)
-    metrics = {
-        'loss': loss,
-        'accuracy': jnp.mean(jnp.argmax(logits, -1) == code_labels)
-    }
-    return state, metrics
+
+    # https://jax.readthedocs.io/en/latest/jax-101/06-parallelism.html#example
+    @functools.partial(jax.pmap, axis_name="batch")
+    def train_update(state: train_state.TrainState, batch, model_rng):
+        """Perform a single training step."""
+        state = jax_utils.replicate(state)
+        batch = jax.tree_map(lambda x: x.reshape(jax.local_device_count(), -1, *x.shape[1:]), batch)
+        def loss_fn(params):
+            logits, code_labels, init_mask = state.apply_fn({'params': params}, batch, model_rng)
+            loss = weighted_sequence_cross_entropy_loss(
+                labels=code_labels,
+                logits=logits,
+                weights=init_mask.astype(jnp.float32),
+                label_smoothing=0.1,
+            ).mean()
+            return loss, (logits, code_labels)
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        outs, grads = jax.pmap(grad_fn, axis_name='batch')(state.params)
+        loss, (logits, code_labels) = outs
+        # reduce gradients first so we save memory when it comes time to apply gradients?
+        grads = jax.lax.pmean(grads, axis_name='batch')
+        loss = jax.lax.pmean(loss, axis_name='batch')
+        accuracy = jax.lax.pmean(jnp.mean(jnp.argmax(logits, -1) == code_labels), axis_name='batch')
+        state = jax_utils.unreplicate(state)
+        state = state.apply_gradients(grads=grads)
+        metrics = {
+            'loss': loss,
+            'accuracy': accuracy,
+        }
+        return state, metrics
+
+    return train_update(state, batch, model_rng)
 
 @jax.jit
 def predict_step(state: train_state.TrainState, batch, model_rng):
@@ -139,8 +152,9 @@ def create_train_state(rng, config, model: ImageNet_class_conditional_generator_
     # params['transformer_model'] = pt_vars['params']
     params = freeze(params)
     tx = optax.adamw(config.optimizer.lr, b1=config.optimizer.beta1, b2=config.optimizer.beta2, weight_decay=config.optimizer.weight_decay)
-    return train_state.TrainState.create(
+    state = train_state.TrainState.create(
         apply_fn=model.apply, params=params, tx=tx)
+    return state
 
 def init_ckpts(config: ml_collections.ConfigDict):
     ckpt_path = Path(config.checkpoint_dir) / wandb.run.name
@@ -208,7 +222,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Training and evaluation script for maskgit_class_cond model")
 
-    parser.add_argument("--batch_size", "-bs", type=int, default=4, help="Batch size for training and evaluation")
+    parser.add_argument("--batch_size", "-bs", type=int, default=2, help="Batch size for training and evaluation")
     parser.add_argument("--tag", "-t", type=str, default="default", help="Tag for wandb logging")
 
     return parser.parse_args()
@@ -217,7 +231,7 @@ def main():
     args = parse_arguments()
 
     cf = maskgit_class_cond_config.get_config()
-    cf.batch_size = args.batch_size
+    cf.batch_size = args.batch_size * jax.device_count()
     cf.tag = args.tag
 
     train_and_evaluate(cf)
