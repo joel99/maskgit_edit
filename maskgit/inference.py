@@ -72,21 +72,34 @@ class ImageNet_class_conditional_generator():
         self.tokenizer_variables = restore_from_path(
             ImageNet_class_conditional_generator.checkpoint_canonical_path("tokenizer", image_size))
 
-    def generate_samples(self, input_tokens, rng, start_iter=0, num_iterations=16):
+    def generate_samples(self, input_tokens, rng, start_iter=0, num_iterations=16, guidance=None):
         def tokens_to_logits(seq):
             logits = self.transformer_model.apply(self.transformer_variables, seq, deterministic=True)
             logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
             return logits
 
-        output_tokens = parallel_decode.decode(
-            input_tokens,
-            rng,
-            tokens_to_logits,
-            num_iter=num_iterations,
-            choice_temperature=self.maskgit_cf.sample_choice_temperature,
-            mask_token_id=self.maskgit_cf.transformer.mask_token_id,
-            start_iter=start_iter,
-        )
+        if guidance is not None:
+            output_tokens = parallel_decode.decode_sample_guidance(
+                input_tokens,
+                guidance,
+                rng,
+                tokens_to_logits,
+                codebook_size=self.maskgit_cf.vqvae.codebook_size,
+                num_iter=num_iterations,
+                choice_temperature=self.maskgit_cf.sample_choice_temperature,
+                mask_token_id=self.maskgit_cf.transformer.mask_token_id,
+                start_iter=start_iter,
+            )
+        else:
+            output_tokens = parallel_decode.decode(
+                input_tokens,
+                rng,
+                tokens_to_logits,
+                num_iter=num_iterations,
+                choice_temperature=self.maskgit_cf.sample_choice_temperature,
+                mask_token_id=self.maskgit_cf.transformer.mask_token_id,
+                start_iter=start_iter,
+            )
 
         output_tokens = jnp.reshape(output_tokens[:, -1, 1:], [-1, self.transformer_latent_size, self.transformer_latent_size])
         gen_images = self.tokenizer_model.apply(
@@ -204,7 +217,11 @@ class ImageNet_class_conditional_generator():
         label_tokens = label_tokens + self.maskgit_cf.vqvae.codebook_size
         # Concatenate the two as input_tokens
         input_tokens = jnp.concatenate([label_tokens, masked_tokens], axis=-1)
-        return (latent_mask, input_tokens.astype(jnp.int32))
+
+        # The usage of guidance tokens implies the input image is already edited.
+        guidance_tokens = np.reshape(image_tokens, [self.maskgit_cf.eval_batch_size, -1])
+        guidance_tokens = jnp.concatenate([label_tokens, guidance_tokens], axis=-1)
+        return (latent_mask, input_tokens.astype(jnp.int32), guidance_tokens.astype(jnp.int32))
 
 
     def composite_outputs(self, input, latent_mask, outputs):

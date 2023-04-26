@@ -128,8 +128,11 @@ def decode(inputs,
     return not_at_end
 
   def loop_body_fn(state):
-    """Beam search loop state update function."""
-    # breakpoint() # TODO Honestly can't understand this without stepping, but I need to actually return logits at some point
+    """Beam search loop state update function.
+      JY notes:
+      - samples and fills in for all masked tokens.
+      - identifies masked tokens for next round according to sample confidence.
+    """
     rng = state.rng
     step = state.cur_index
     # Current input ids: [batch_size, seq_length].
@@ -189,6 +192,7 @@ def decode_sample_guidance(inputs,
            guidance, # unmasked
            rng,
            tokens_to_logits,
+           codebook_size=8192,
            mask_token_id=-1,
            num_iter=12,
            start_iter=0,
@@ -202,7 +206,7 @@ def decode_sample_guidance(inputs,
   guidance = guidance.astype("int32")
   unknown_number_in_the_beginning = jnp.sum(inputs == mask_token_id, axis=-1)
   # Initializes state
-  init_state = state_init(inputs, rng, num_iter, start_iter=start_iter)
+  init_state = state_init_with_logits(inputs, rng, num_iter, codebook_size=codebook_size, start_iter=start_iter)
 
   def loop_cond_fn(state):
     """Beam search loop termination condition."""
@@ -210,56 +214,77 @@ def decode_sample_guidance(inputs,
     return not_at_end
 
   def loop_body_fn(state):
-    """Beam search loop state update function."""
+    """Beam search loop state update function. Inverts order of sampling and masking.
+      JY notes:
+      - we still keep post-masking as before. i.e. loop comes masked, sample, and mask again.
+        - But of the masked tokens, we replace a fraction with guidance.
+        - This fraction is determined by previous round confidence.
+      - Specifically we will highlight a small number of tokens to mask
+        - (either from uniform or according to same confidence logic as above, using confidence from previous round),
+        - the rest are guided (for this round).
+
+      Hmm... the order of ops is not right -- if we replace masks with guidance then there's a shift,
+      i.e. we shouldn't believe the confidences from those guided tokens to be calibrated for subsequent sampling.
+      Oh well. BERT does it. We can too.
+    """
     rng = state.rng
     step = state.cur_index
+    rng, sample_rng = jax.random.split(rng, 2)
     # Current input ids: [batch_size, seq_length].
     cur_ids = state.cur_seqs
 
-    # Calls model on current seqs to get next-iteration seqs.
-    logits = tokens_to_logits(cur_ids)
-    rng, sample_rng = jax.random.split(rng, 2)
-    # Samples the ids using categorical sampling: [batch_size, seq_length].
-    sampled_ids = jax.random.categorical(sample_rng, logits)
-
-    # Just updates the masked tokens.
-    unknown_map = (cur_ids == mask_token_id)
-    sampled_ids = jnp.where(unknown_map, sampled_ids, cur_ids)
-    # Defines the mask ratio for the next round. The number to mask out is
-    # determined by mask_ratio * unknown_number_in_the_beginning.
-    ratio = 1. * (step + 1) / num_iter
+    ratio = 1. * step / num_iter
     mask_ratio = mask_schedule.schedule(ratio, unknown_number_in_the_beginning,
                                         mask_scheduling_method)
-    # Updates final seqs with the current sampled_ids.
-    final_seqs = jax.lax.dynamic_update_slice(
-        state.final_seqs, jnp.expand_dims(sampled_ids, axis=1), (0, step, 0))
-    # Computes the probabilities of each selected tokens.
-    probs = jax.nn.softmax(logits, axis=-1)
-    selected_probs = jnp.squeeze(
-        jnp.take_along_axis(probs, jnp.expand_dims(sampled_ids.astype(jnp.int32), -1), -1), -1)
-    # Ignores the tokens given in the input by overwriting their confidence.
-    selected_probs = jnp.where(unknown_map, selected_probs,
-                               _CONFIDENCE_OF_KNOWN_TOKENS)
     # Gets mask lens for each sample in the batch according to the mask ratio.
     mask_len = jnp.expand_dims(
         jnp.floor(unknown_number_in_the_beginning * mask_ratio), 1)
+    # This is the number of tokens we want masked at the end, and thus the number we replace with guidance.
+    unknown_map = (cur_ids == mask_token_id)
     # Keeps at least one of prediction in this round and also masks out at least
     # one and for the next iteration
     mask_len = jnp.maximum(
         1,
         jnp.minimum(jnp.sum(unknown_map, axis=-1, keepdims=True) - 1, mask_len))
 
+    # Computes the probabilities of each selected tokens.
+    if state.logits is None:
+      selected_probs = jnp.ones(cur_ids.shape[0], cur_ids.shape[1]) / codebook_size
+    else:
+      probs = jax.nn.softmax(state.logits, axis=-1)
+      selected_probs = jnp.squeeze(
+        # Need ids from pre-mask in last round
+          jnp.take_along_axis(probs, jnp.expand_dims(state.final_seqs[:, step-1].astype(jnp.int32), -1), -1), -1)
+          # jnp.take_along_axis(probs, jnp.expand_dims(cur_ids.astype(jnp.int32), -1), -1), -1)
+    # Ignores the tokens given in the input by overwriting their confidence.
+    print(unknown_map.shape, selected_probs.shape)
+    selected_probs = jnp.where(unknown_map, selected_probs, # TODO deal with selected probs
+                              _CONFIDENCE_OF_KNOWN_TOKENS)
+
     # Adds noise for randomness
     rng, choice_rng = jax.random.split(rng)
     masking = mask_by_random_topk(choice_rng, mask_len, selected_probs,
                                   choice_temperature * (1. - ratio))
-    # Masks tokens with lower confidence.
+    # Masks tokens with lower confidence (i.e. keep current, which )
+    guided_ids = jnp.where(masking, guidance, cur_ids)
+    # sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
+
+    # Calls model on current seqs to get next-iteration seqs.
+    logits = tokens_to_logits(guided_ids)
+    # Samples the ids using categorical sampling: [batch_size, seq_length].
+    sampled_ids = jax.random.categorical(sample_rng, logits)
+    sampled_ids = jnp.where(unknown_map, sampled_ids, cur_ids)
+    # Updates final seqs with the current sampled_ids.
+    final_seqs = jax.lax.dynamic_update_slice(
+        state.final_seqs, jnp.expand_dims(sampled_ids, axis=1), (0, step, 0))
     sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
-    return State(
+
+    return StateWithLogits(
         cur_index=state.cur_index + 1,
         cur_seqs=sampled_ids,
         rng=rng,
         final_seqs=final_seqs,
+        logits=logits
         )
 
   # Run while loop and get final beam search state.
