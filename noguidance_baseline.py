@@ -34,7 +34,6 @@ from maskgit.notebook_utils import (
 )
 download_if_needed()
 
-#%%
 image_size = 256
 generator_256 = ImageNet_class_conditional_generator(image_size=image_size)
 generator_256.maskgit_cf.eval_batch_size = 4
@@ -78,8 +77,11 @@ MODE = 'mask'
 
 # SRC = 'target'
 SRC = 'stroke'
-ITERATE_WITH_GUIDANCE = False
-ITERATE_WITH_GUIDANCE = True
+CONTEXT_GUIDANCE = False
+# CONTEXT_GUIDANCE = True
+
+SELF_GUIDANCE_FIDELITY = 1e-1
+SELF_GUIDANCE_STYLE = 'l2'
 
 image = get_data(fns[0])[SRC]
 if MODE == 'bbox':
@@ -87,18 +89,18 @@ if MODE == 'bbox':
 
     bbox = Bbox(bbox_top_left_height_width)
     draw_image_with_bbox(image, bbox)
-    latent_mask, input_tokens, guidance_tokens = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
+    latent_mask, input_tokens, guidance_tokens, codebook = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
         image, bbox, label)
 else:
     mask = get_data(fns[0])['mask']
-    latent_mask, input_tokens, guidance_tokens = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
+    latent_mask, input_tokens, guidance_tokens, codebook = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
         image, bbox=None, target_label=label, mask=mask)
     fig, ax = plt.subplots()
     plt.imshow(image)
     ax.imshow(image)
     ax.axis("off")
     plt.title(category)
-    plt.show()
+    # plt.show()
 
 pmap_input_tokens = generator_256.pmap_input_tokens(input_tokens)
 
@@ -113,12 +115,15 @@ if run_mode == 'normal':
         sample_rng,
         start_iter=2,
         num_iterations=12,
-        guidance=None if not ITERATE_WITH_GUIDANCE else guidance_tokens,
+        guidance=None if not (CONTEXT_GUIDANCE or SELF_GUIDANCE_FIDELITY) else guidance_tokens,
+        codebook=codebook,
+        context_guidance=CONTEXT_GUIDANCE,
+        self_guidance_style=SELF_GUIDANCE_STYLE,
         )
 
 elif run_mode == 'pmap':
     sample_rngs = jax.random.split(sample_rng, jax.local_device_count())
-    results = p_edit_256_samples(pmap_input_tokens, sample_rngs) # TODO add guidance
+    results = p_edit_256_samples(pmap_input_tokens, sample_rngs)
     # flatten the pmap results
     results = results.reshape([-1, image_size, image_size, 3])
 

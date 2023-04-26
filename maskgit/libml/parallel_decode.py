@@ -187,8 +187,102 @@ def decode(inputs,
   final_state = lax.while_loop(loop_cond_fn, loop_body_fn, init_state)
   return final_state.final_seqs
 
+def decode_self_guidance(inputs,
+           guidance, # unmasked, [batch_size, seq_length]
+           rng,
+           tokens_to_logits,
+           mask_token_id=-1,
+           num_iter=12,
+           start_iter=0,
+           choice_temperature=1.0,
+           mask_scheduling_method="cosine",
+           self_guidance=None, # Code x Code matrix. No need for normalization, an energy is fine.
+           fidelity=1., # exponential in mixing
+  ):
+  inputs = inputs.astype("int32")
+  guidance = guidance.astype("int32")
+  unknown_number_in_the_beginning = jnp.sum(inputs == mask_token_id, axis=-1)
+  # Initializes state
+  init_state = state_init(inputs, rng, num_iter, start_iter=start_iter)
 
-def decode_sample_guidance(inputs,
+  if self_guidance is None:
+    self_guidance_weighted = jnp.eye(guidance.shape[0], dtype=jnp.float32)
+  else:
+    self_guidance_weighted = jax.lax.pow(self_guidance, fidelity)
+    # guidance shape is arbitrary, what we want is to index, not mat mul
+    self_guidance_weighted = self_guidance_weighted[guidance[:, 1:]] # * 1: to remove cls token
+  # Concatenate a uniform guidance for first (the class token)
+  self_guidance_weighted = jnp.concatenate([jnp.ones_like(self_guidance_weighted[:,:1]), self_guidance_weighted], axis=1)
+
+  def loop_cond_fn(state):
+    """Beam search loop termination condition."""
+    not_at_end = (state.cur_index < num_iter)
+    return not_at_end
+
+  def loop_body_fn(state):
+    """Beam search loop state update function.
+      JY notes:
+      - samples and fills in for all masked tokens.
+      - identifies masked tokens for next round according to sample confidence.
+    """
+    rng = state.rng
+    step = state.cur_index
+    # Current input ids: [batch_size, seq_length].
+    cur_ids = state.cur_seqs
+
+    # Calls model on current seqs to get next-iteration seqs.
+    logits = tokens_to_logits(cur_ids) # B T Code_tgt
+    breakpoint()
+    logits = self_guidance_weighted * logits # * Change
+
+    rng, sample_rng = jax.random.split(rng, 2)
+    # Samples the ids using categorical sampling: [batch_size, seq_length].
+    sampled_ids = jax.random.categorical(sample_rng, logits)
+
+    # Just updates the masked tokens.
+    unknown_map = (cur_ids == mask_token_id)
+    sampled_ids = jnp.where(unknown_map, sampled_ids, cur_ids)
+    # Defines the mask ratio for the next round. The number to mask out is
+    # determined by mask_ratio * unknown_number_in_the_beginning.
+    ratio = 1. * (step + 1) / num_iter
+    mask_ratio = mask_schedule.schedule(ratio, unknown_number_in_the_beginning,
+                                        mask_scheduling_method)
+    # Updates final seqs with the current sampled_ids.
+    final_seqs = jax.lax.dynamic_update_slice(
+        state.final_seqs, jnp.expand_dims(sampled_ids, axis=1), (0, step, 0))
+    # Computes the probabilities of each selected tokens.
+    probs = jax.nn.softmax(logits, axis=-1)
+    selected_probs = jnp.squeeze(
+        jnp.take_along_axis(probs, jnp.expand_dims(sampled_ids.astype(jnp.int32), -1), -1), -1)
+    # Ignores the tokens given in the input by overwriting their confidence.
+    selected_probs = jnp.where(unknown_map, selected_probs,
+                               _CONFIDENCE_OF_KNOWN_TOKENS)
+    # Gets mask lens for each sample in the batch according to the mask ratio.
+    mask_len = jnp.expand_dims(
+        jnp.floor(unknown_number_in_the_beginning * mask_ratio), 1)
+    # Keeps at least one of prediction in this round and also masks out at least
+    # one and for the next iteration
+    mask_len = jnp.maximum(
+        1,
+        jnp.minimum(jnp.sum(unknown_map, axis=-1, keepdims=True) - 1, mask_len))
+
+    # Adds noise for randomness
+    rng, choice_rng = jax.random.split(rng)
+    masking = mask_by_random_topk(choice_rng, mask_len, selected_probs,
+                                  choice_temperature * (1. - ratio))
+    # Masks tokens with lower confidence.
+    sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
+    return State(
+        cur_index=state.cur_index + 1,
+        cur_seqs=sampled_ids,
+        rng=rng,
+        final_seqs=final_seqs)
+
+  # Run while loop and get final beam search state.
+  final_state = lax.while_loop(loop_cond_fn, loop_body_fn, init_state)
+  return final_state.final_seqs
+
+def decode_context_guidance(inputs,
            guidance, # unmasked
            rng,
            tokens_to_logits,
@@ -197,13 +291,17 @@ def decode_sample_guidance(inputs,
            num_iter=12,
            start_iter=0,
            choice_temperature=1.0,
-           mask_scheduling_method="cosine"):
+           mask_scheduling_method="cosine",
+  ):
   """
   We want to decode while conditioning on user guidance.
   We still use the schedule, but use it to determine a priori how many tokens to mask and keep the rest of input as context.
+
+  Self-guidance not implemented here because pilots show dependence here is too strong (for untuned model).
   """
   inputs = inputs.astype("int32")
   guidance = guidance.astype("int32")
+  breakpoint() # We changed guidance to not include the class token, how does that affect things? we probably want to pad by one to match input shape
   unknown_number_in_the_beginning = jnp.sum(inputs == mask_token_id, axis=-1)
   # Initializes state
   init_state = state_init_with_logits(inputs, rng, num_iter, codebook_size=codebook_size, start_iter=start_iter)
@@ -257,8 +355,7 @@ def decode_sample_guidance(inputs,
           jnp.take_along_axis(probs, jnp.expand_dims(state.final_seqs[:, step-1].astype(jnp.int32), -1), -1), -1)
           # jnp.take_along_axis(probs, jnp.expand_dims(cur_ids.astype(jnp.int32), -1), -1), -1)
     # Ignores the tokens given in the input by overwriting their confidence.
-    print(unknown_map.shape, selected_probs.shape)
-    selected_probs = jnp.where(unknown_map, selected_probs, # TODO deal with selected probs
+    selected_probs = jnp.where(unknown_map, selected_probs,
                               _CONFIDENCE_OF_KNOWN_TOKENS)
 
     # Adds noise for randomness

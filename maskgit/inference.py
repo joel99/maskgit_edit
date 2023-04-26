@@ -72,24 +72,61 @@ class ImageNet_class_conditional_generator():
         self.tokenizer_variables = restore_from_path(
             ImageNet_class_conditional_generator.checkpoint_canonical_path("tokenizer", image_size))
 
-    def generate_samples(self, input_tokens, rng, start_iter=0, num_iterations=16, guidance=None):
+    def get_guidance_energy(
+        self, self_guidance_style, codebook # N x D
+    ): # return N x N
+        # technically None should also provide clean implementation
+        if self_guidance_style == "l2":
+            difference = codebook[:, None, :] - codebook[None, :, :] # N x N x D
+            return -jnp.sum(difference ** 2, axis=-1) # N x N
+        elif self_guidance_style == "knn":
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
+
+    def generate_samples(
+        self,
+        input_tokens,
+        rng,
+        start_iter=0,
+        num_iterations=16,
+        guidance=None,
+        codebook=None,
+        context_guidance=False,
+        self_guidance_lambda=1.0,
+        self_guidance_style="l2", # todo extend to knn. Note we set to -inf there, not 0, since this is energy.
+    ):
         def tokens_to_logits(seq):
             logits = self.transformer_model.apply(self.transformer_variables, seq, deterministic=True)
             logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
             return logits
-
+        assert not context_guidance and self_guidance_lambda, "Guidance is mutually exclusive in current implementation."
         if guidance is not None:
-            output_tokens = parallel_decode.decode_sample_guidance(
-                input_tokens,
-                guidance,
-                rng,
-                tokens_to_logits,
-                codebook_size=self.maskgit_cf.vqvae.codebook_size,
-                num_iter=num_iterations,
-                choice_temperature=self.maskgit_cf.sample_choice_temperature,
-                mask_token_id=self.maskgit_cf.transformer.mask_token_id,
-                start_iter=start_iter,
-            )
+            if self_guidance_lambda:
+                output_tokens = parallel_decode.decode_self_guidance(
+                    input_tokens,
+                    guidance,
+                    rng,
+                    tokens_to_logits,
+                    num_iter=num_iterations,
+                    choice_temperature=self.maskgit_cf.sample_choice_temperature,
+                    mask_token_id=self.maskgit_cf.transformer.mask_token_id,
+                    start_iter=start_iter,
+                    self_guidance=self.get_guidance_energy(self_guidance_style, codebook),
+                    fidelity=self_guidance_lambda,
+                )
+            if context_guidance:
+                output_tokens = parallel_decode.decode_context_guidance(
+                    input_tokens,
+                    guidance,
+                    rng,
+                    tokens_to_logits,
+                    codebook_size=self.maskgit_cf.vqvae.codebook_size,
+                    num_iter=num_iterations,
+                    choice_temperature=self.maskgit_cf.sample_choice_temperature,
+                    mask_token_id=self.maskgit_cf.transformer.mask_token_id,
+                    start_iter=start_iter,
+                )
         else:
             output_tokens = parallel_decode.decode(
                 input_tokens,
@@ -202,6 +239,12 @@ class ImageNet_class_conditional_generator():
               method=self.tokenizer_model.encode_to_indices,
               mutable=False)
 
+        codebook = self.tokenizer_model.apply(
+            self.tokenizer_variables,
+            method=self.tokenizer_model.get_codebook_funct,
+            mutable=False
+        )
+
         # Create the masked tokens
         if mask is not None:
             latent_mask = self._create_latent_mask_from_mask(mask)
@@ -220,8 +263,8 @@ class ImageNet_class_conditional_generator():
 
         # The usage of guidance tokens implies the input image is already edited.
         guidance_tokens = np.reshape(image_tokens, [self.maskgit_cf.eval_batch_size, -1])
-        guidance_tokens = jnp.concatenate([label_tokens, guidance_tokens], axis=-1)
-        return (latent_mask, input_tokens.astype(jnp.int32), guidance_tokens.astype(jnp.int32))
+        guidance_tokens = jnp.concatenate([label_tokens, guidance_tokens], axis=-1) # * Technically just saying class token as guidance for class token - useful for matching shape in context_guidance but probably not important.
+        return (latent_mask, input_tokens.astype(jnp.int32), guidance_tokens.astype(jnp.int32), codebook)
 
 
     def composite_outputs(self, input, latent_mask, outputs):
