@@ -208,9 +208,12 @@ def decode_self_guidance(inputs,
   if self_guidance is None:
     self_guidance_weighted = jnp.eye(guidance.shape[0], dtype=jnp.float32)
   else:
-    self_guidance_weighted = jax.lax.pow(self_guidance, fidelity)
+    # Use fidelity as boltzmann temperature for self_guidance
+    self_guidance_weighted = jax.nn.softmax(self_guidance / fidelity, axis=-1)
     # guidance shape is arbitrary, what we want is to index, not mat mul
     self_guidance_weighted = self_guidance_weighted[guidance[:, 1:]] # * 1: to remove cls token
+    # Normalize so mean of each row is 1 - i.e. if extremely high temperature, then all are equally likely
+    self_guidance_weighted = self_guidance_weighted / jnp.mean(self_guidance_weighted, axis=-1, keepdims=True)
   # Concatenate a uniform guidance for first (the class token)
   self_guidance_weighted = jnp.concatenate([jnp.ones_like(self_guidance_weighted[:,:1]), self_guidance_weighted], axis=1)
 
@@ -232,7 +235,6 @@ def decode_self_guidance(inputs,
 
     # Calls model on current seqs to get next-iteration seqs.
     logits = tokens_to_logits(cur_ids) # B T Code_tgt
-    breakpoint()
     logits = self_guidance_weighted * logits # * Change
 
     rng, sample_rng = jax.random.split(rng, 2)
@@ -428,7 +430,6 @@ def decode_nondiscard_flax(inputs,
 
   def loop_body_fn(mdl, state):
     """Beam search loop state update function."""
-    # breakpoint() # TODO Honestly can't understand this without stepping, but I need to actually return logits at some point
     rng = state.rng
     step = state.cur_index
     # Current input ids: [batch_size, seq_length].

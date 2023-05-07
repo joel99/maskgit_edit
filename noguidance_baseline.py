@@ -80,7 +80,7 @@ SRC = 'stroke'
 CONTEXT_GUIDANCE = False
 # CONTEXT_GUIDANCE = True
 
-SELF_GUIDANCE_FIDELITY = 1e-1
+SELF_GUIDANCE_FIDELITY = 1e3
 SELF_GUIDANCE_STYLE = 'l2'
 
 image = get_data(fns[0])[SRC]
@@ -119,6 +119,7 @@ if run_mode == 'normal':
         codebook=codebook,
         context_guidance=CONTEXT_GUIDANCE,
         self_guidance_style=SELF_GUIDANCE_STYLE,
+        self_guidance_lambda=SELF_GUIDANCE_FIDELITY,
         )
 
 elif run_mode == 'pmap':
@@ -131,7 +132,7 @@ elif run_mode == 'pmap':
 # Post-process by applying a gaussian blur using the input
 # and output images.
 composite_images = generator_256.composite_outputs(image, latent_mask, results)
-
 #-----------------------
-visualize_images(composite_images, figsize=(12, 12))
+visualize_images(composite_images, figsize=(12, 12), )
+# visualize_images(composite_images, figsize=(12, 12), title=f'Temp: {SELF_GUIDANCE_FIDELITY}')
 # visualize_images(composite_images, title=f'outputs')

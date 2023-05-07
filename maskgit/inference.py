@@ -78,7 +78,7 @@ class ImageNet_class_conditional_generator():
         # technically None should also provide clean implementation
         if self_guidance_style == "l2":
             difference = codebook[:, None, :] - codebook[None, :, :] # N x N x D
-            return -jnp.sum(difference ** 2, axis=-1) # N x N
+            return -jnp.mean(difference ** 2, axis=-1) # N x N
         elif self_guidance_style == "knn":
             raise NotImplementedError
         else:

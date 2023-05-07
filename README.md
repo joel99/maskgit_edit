@@ -1,26 +1,23 @@
-# Project setup notes
-Create a new conda env, install ipykernel for notebook operation:
-`conda install ipykernel --update-deps --force-reinstall`
-`conda install -c conda-forge opencv`
-`pip install -r requirements.txt`
-`pip install "jax[cuda11_cudnn82]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html`
-Also at some point protobuf gets too new for the ckpts in this lib, so downgrade:
-`pip install protobuf==3.20.*`
-[Also matplotlib got wrecked at some point](https://github.com/espnet/espnet/issues/4573#issuecomment-1218707672):
-`pip uninstall matplotlib`
-`pip install --no-cache-dir "matplotlib"`
-Also we use torchvision to load imagenet, wee...
-`pip3 install torch==1.10.1+cu113 torchvision==0.11.2+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html`
-(Because tf-ds requires full tar, but my cluster happened to have untar-ed version sitting around)
-For just a standard torch with cuda 11.7 (latest as of writing)
-`pip3 install torch torchvision torchaudio`
+# MaskGIT-Edit
+
+## Motivation
+A full image synthesis workflow should allow user guidance at all levels of granularity. Text-based user inputs are suitable for coarse-grained control, but pixel-space markings are a more intuitive means for providing spatially precise user guidance. Note that in this regime, a user is typically fine-tuning small patches within a generated image, so our methods should primarily model the conditional generation of only the edited portions of the image.
+
+Supervised tuning of a generative model to allow conditioning on user inputs is expensive as there is no true output matching a given user's edit in general. Fortuntaely, [SDEdit](https://sde-image-editing.github.io/) provides a proof of concept that clever interfacing with a generative model, without _any_ tuning, can integrate user edits quite well. However, the SDEdit model can only be formulated for diffusion models. User edit semantics are preserved only in so far as a diffusion process tends to not corrupt major edit structure. A diffusion edit method is convenient, but does not satisfy the rapid iteration requirement (for the standard diffusion model format), as the whole image is regenerated for a given edit. A candidate backbone that naturally fits the conditional generation problem is [MaskGIT](https://masked-generative-image-transformer.github.io/), which uses a masked autoencoding Vision Transformer over a diffusion process. There is no straightforward diffusion process to directly integrate edits, however, so we discuss how we approach the problem next.
+
+## Approach
+
+Pull slides.
+
+### Implementation Note
+We use the open-sourced MaskGIT repo -- unfortunately this only had an inference demo so effort was primarily directed to setting up a training pipeline once it seemed like tuning was inevitably needed. The open MaskGIT weights are only on ImageNet, so we use those.
+
+## Comparisons
 
 
----
 
-Other notes:
-JAX Cuda support (assumes your device has some cuda available, replace appropriately)
-`pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html`
-Or
-pip install "jax[cuda11_cudnn82]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+## Ablations
 
+
+
+## Summary
