@@ -184,15 +184,15 @@ class ImageNet_class_conditional_generator_module(nn.Module):
         # Concatenate the two as input_tokens
         input_tokens = jnp.concatenate([image_cls_tokens, masked_tokens], axis=-1)
 
-        if self.transformer_model.is_mutable_collection("params"):
-            # TODO: low pri - this is redundantly called everytime. How can I just call it once for init? (We need to do a proper init despite pretraining bc model.init must be called before we can transfer in weights)
-            init_vars = self.transformer_model(input_tokens) # https://flax.readthedocs.io/en/latest/api_reference/_autosummary/flax.linen.while_loop.html - consider initializing before
+        # if self.transformer_model.is_mutable_collection("params"):
+        #     # TODO: low pri - this is redundantly called everytime. How can I just call it once for init? (We need to do a proper init despite pretraining bc model.init must be called before we can transfer in weights)
+        #     init_vars = self.transformer_model(input_tokens) # https://flax.readthedocs.io/en/latest/api_reference/_autosummary/flax.linen.while_loop.html - consider initializing before
         output_logits = parallel_decode.decode_logit_flax_scan(
             input_tokens,
             rng,
             self.transformer_model,
             codebook_size=self.maskgit_cf.vqvae.codebook_size, # this is the codebook of the logits we care about (transformer also predicts logits for imagenet classes)
-            num_iter=1, # TODO bump,
+            num_iter=2,
             choice_temperature=self.maskgit_cf.sample_choice_temperature,
             mask_token_id=self.maskgit_cf.transformer.mask_token_id,
             start_iter=0,

@@ -498,11 +498,11 @@ def decode_logit_flax_scan(inputs,
            module,
            codebook_size=8192,
            mask_token_id=-1,
-           num_iter=12,
+           num_iter=2,
            start_iter=0,
            choice_temperature=1.0,
            mask_scheduling_method="cosine"):
-  """Fast decoding for iterative generation.
+  """Fast decoding for TUNING iterative generation. Stops gradient before all but last iteration
 
   Args:
     inputs: int32 array: [batch_size, seq_length] input sequence of masked
@@ -529,6 +529,8 @@ def decode_logit_flax_scan(inputs,
       rng = state.rng
       step = state.cur_index
       cur_ids = state.cur_seqs
+      if step == state.num_iter - 1:
+        cur_ids = jax.lax.stop_gradient(cur_ids)
 
       logits = mdl(cur_ids)
       logits = logits[..., :codebook_size]
