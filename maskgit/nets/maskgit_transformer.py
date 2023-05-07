@@ -22,7 +22,7 @@ inputs, the model predicts the probability of all individual tokens.
 For details, please see https://arxiv.org/abs/2012.09841.
 """
 
-from typing import Any, Callable, Dict, Iterable, Optional, Text, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Optional, Text, Tuple, Union, Optional
 
 from flax import linen as nn
 import jax
@@ -249,15 +249,23 @@ class Transformer(nn.Module):
   @nn.compact
   def __call__(self,
                input_ids: jnp.ndarray,
-               deterministic: bool = True) -> Dict[Text, jnp.ndarray]:
+               guidance_ids: Optional[jnp.ndarray] = None, # TODO add in confidence scaling
+               deterministic: bool = True
+    ) -> Dict[Text, jnp.ndarray]:
     input_ids = input_ids.astype('int32')
-    input_embeddings = Embed(
+    embed = Embed(
         embedding_size=self.hidden_size,
         hidden_dropout_prob=self.hidden_dropout_prob,
         vocab_size=self.vocab_size,
         max_position_embeddings=self.max_position_embeddings,
-        initializer_fn=truncated_normal(self.initializer_range))(
-            input_ids=input_ids, deterministic=deterministic)
+        initializer_fn=truncated_normal(self.initializer_range))
+    input_embeddings = embed(input_ids=input_ids, deterministic=deterministic)
+    if guidance_ids is not None: # we directly superimpose guidance
+        guidance_embeddings = embed(input_ids=guidance_ids, deterministic=deterministic)
+        # Mask according to which input ids a mask token of -1, and then add
+        mask = (input_ids == -1).astype(jnp.float32)
+        input_embeddings = input_embeddings + mask[..., None] * guidance_embeddings
+
 
     layer_input = input_embeddings
     for _ in range(self.num_hidden_layers):

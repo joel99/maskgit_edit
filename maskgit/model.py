@@ -37,6 +37,7 @@ from maskgit.inference import ImageNet_class_conditional_generator
 #TODO: compress by subclassing the og generator
 class ImageNet_class_conditional_generator_module(nn.Module):
     transformer_model: maskgit_transformer.Transformer
+    # distance_matrix: jnp.ndarray
 
     def checkpoint_canonical_path(maskgit_or_tokenizer, image_size):
         return f"./checkpoints/{maskgit_or_tokenizer}_imagenet{image_size}_checkpoint"
@@ -187,7 +188,7 @@ class ImageNet_class_conditional_generator_module(nn.Module):
         # if self.transformer_model.is_mutable_collection("params"):
         #     # TODO: low pri - this is redundantly called everytime. How can I just call it once for init? (We need to do a proper init despite pretraining bc model.init must be called before we can transfer in weights)
         #     init_vars = self.transformer_model(input_tokens) # https://flax.readthedocs.io/en/latest/api_reference/_autosummary/flax.linen.while_loop.html - consider initializing before
-        output_logits = parallel_decode.decode_logit_flax_scan(
+        output_logits = parallel_decode.decode_logit_flax_manual(
             input_tokens,
             rng,
             self.transformer_model,
@@ -196,6 +197,8 @@ class ImageNet_class_conditional_generator_module(nn.Module):
             choice_temperature=self.maskgit_cf.sample_choice_temperature,
             mask_token_id=self.maskgit_cf.transformer.mask_token_id,
             start_iter=0,
+            iterate_guidance=self.maskgit_cf.tune_style == "iterate",
+            reweight_guidance=self.maskgit_cf.tune_style == "reweight",
         )
         output_logits = output_logits[:, 1:] # since class label is first token
         return output_logits, image_tokens, latent_mask # initial mask

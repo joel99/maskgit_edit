@@ -23,12 +23,15 @@ Uncertainty is a great way to fold in user edits and future methods will likely 
 
 First, MaskGIT is a Vector-Quantized Transformer that first encodes image patches into discrete codes. This project, like MaskGIT itself, focuses on the Transformer generative model over code tokens, not pixels. MaskGIT uses beam-search/ancestral sampling to draw from $p(X_E|X_{[n]\setminus E})$ over $K$ steps; each step conditions _only on previously sampled tokens_ and locks in the most confident tokens.
 
-Thus, MaskGIT does not by default condition in $E$ to sample $X_E$. We must reframe the inference process. We split this into two steps: when sampling a particular token $X_{j \in E}$, can we use $G_j$ (self-guidance) and $G_{E \setminus j}$ (context-guidance)?
+Thus, MaskGIT does not by default condition in $E$ to sample $X_E$. We must either tune the model to do so, or heuristically hack the inference process. In either case, we split the conditioning into two pieces: for a particular $X_{j \in E}$, can we use $G_j$ (self-guidance) and $G_{E \setminus j}$ (context-guidance)?
 
-- Context-guidance can be used through an inference only manipulation. We retain confidences from the previous sampling step and replace the lowest
+**Non-tuning Heuristics**
+- Context-guidance can be used by manipulating inference. At each step of ancestral sampling, we replace the previous round's least confident samples with guidance. (See `maskgit/libml/parallel_decode.decode_context_guidance`)
+- Self-guidance can reweight sampled confidences via a pre-specified distance metric (such as L2).
 
-1. Patching and ancestral sampling.
-2. Self-conditioning.
+**Tuning**
+- Both forms of guidance might be achieved if the model can be trained to use low confidence samples -- such as those produced in its own iterative sampling. I implement this by retaining the low-confidence samplesd tokens from an initial iteration and adding their embedding to another iteration (See `maskgit.nets.maskgit_transformer`). Guidance can then be provided at test-time identically to how it's provided in modified training.
+- Learned reweighting -- this way we can drop transformer training. Much saved memory.
 
 
 
@@ -45,3 +48,5 @@ We use the open-sourced MaskGIT repo -- unfortunately this only had an inference
 
 ## Summary
 Motivationally, the spatial benefits of MaskGIT are entirely complementary to SDEdit's iterative denoising. Uncertainty is a natural way of trading off fidelity to user guidance with realism.
+
+This project was technically very difficult

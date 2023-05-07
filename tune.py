@@ -115,17 +115,20 @@ def accumulate_metrics(batch_metrics: List[Dict[str, np.ndarray]]):
 def simplify_metrics(metrics):
     return {k: v[0] if jax.local_device_count() > 1 else v for k, v in metrics.items()}
 
-def train_epoch(state, train_dl, model_rng, global_step=0):
+def train_epoch(state, train_dl, model_rng, global_step=0, mini_epoch_state=0, mini_epoch_steps=32): # we can't afford a full train, break every mini_epoch_steps
     train_batch_metrics = []
 
     for i, batch in enumerate(train_dl):
-
+        if i < mini_epoch_state:
+            continue # waste of dataloading but that's not the bottleneck
+        if i >= mini_epoch_state + mini_epoch_steps:
+            break
         if jax.local_device_count() > 1: # to be clear this tree_map is over batch components not data items (i.e. image and label)
             batch = jax.tree_map(lambda x: x.reshape(jax.local_device_count(), -1, *x.shape[1:]), batch)
         state, metrics = train_step(state, batch, model_rng)
         metrics = simplify_metrics(metrics)
         # breakpoint()
-        if (global_step + i) % 100 == 0:
+        if (global_step + i) % 4 == 0:
             log_metric = {
                 'train/loss': metrics['loss'],
                 'train/accuracy': metrics['accuracy'],
@@ -137,11 +140,13 @@ def train_epoch(state, train_dl, model_rng, global_step=0):
             # break # testing checkpointing.
     train_batch_metrics = accumulate_metrics(train_batch_metrics)
 
-    return state, train_batch_metrics, global_step
+    return state, train_batch_metrics, global_step, mini_epoch_state + mini_epoch_steps
 
-def test_epoch(state, test_dl, model_rng, global_step=0):
+def test_epoch(state, test_dl, model_rng, global_step=0, mini_eval_steps=32):
     test_batch_metrics = []
     for i, batch in enumerate(test_dl):
+        if i >= mini_eval_steps:
+            break # can't afford full eval c'est la vie
         if jax.local_device_count() > 1: # to be clear this tree_map is over batch components not data items (i.e. image and label)
             batch = jax.tree_map(lambda x: x.reshape(jax.local_device_count(), -1, *x.shape[1:]), batch)
         metrics = simplify_metrics(predict_step(state, batch, model_rng))
@@ -174,7 +179,7 @@ def create_train_state(rng, config, model: ImageNet_class_conditional_generator_
     params = freeze(params)
     tx = optax.chain( # https://github.com/deepmind/optax/issues/472
         optax.adamw(config.optimizer.lr, b1=config.optimizer.beta1, b2=config.optimizer.beta2, weight_decay=config.optimizer.weight_decay),
-        optax.apply_every(k=10)
+        optax.apply_every(k=16)
     )
     # tx = optax.MultiSteps(
     #     optax.adamw(config.optimizer.lr, b1=config.optimizer.beta1, b2=config.optimizer.beta2, weight_decay=config.optimizer.weight_decay),
@@ -232,6 +237,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
 
     best_loss = 1e9
     step = 0
+    mini_step = 0
     mngr = init_ckpts(config)
 
     for epoch in range(1, config.num_epochs + 1):
@@ -241,7 +247,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
             state = jax_utils.replicate(state)
             model_rng = jax.random.split(model_rng, jax.local_device_count())
 
-        state, train_metrics, step = train_epoch(state, train_dl, model_rng, global_step=step)
+        state, train_metrics, step, mini_step = train_epoch(state, train_dl, model_rng, global_step=step, mini_epoch_state=mini_step)
         test_metrics = test_epoch(state, test_dl, model_rng)
 
         if jax.local_device_count() > 1:
@@ -257,10 +263,13 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Training and evaluation script for maskgit_class_cond model")
 
-    parser.add_argument("--batch_size", "-bs", type=int, default=2, help="Batch size for training and evaluation")
+    parser.add_argument("--batch_size", "-bs", type=int, default=1, help="Batch size for training and evaluation") # 1 is all I can fit on 10G nodes...
     parser.add_argument("--tag", "-t", type=str, default="default", help="Tag for wandb logging")
     parser.add_argument("--pretrained", "-p", type=bool, default=True, help="Use pretrained")
     parser.add_argument("--learning_rate", "-lr", type=float, default=1e-5, help="Learning rate") # Smaller for tuning
+    parser.add_argument("--tune_style", "-ts", type=str, choices=["iterate", "reweight"], default="iterate", help="Tuning style: 'iterate' or 'reweight'")
+
+
 
     return parser.parse_args()
 
@@ -270,6 +279,7 @@ def main():
     cf = maskgit_class_cond_config.get_config()
     cf.batch_size = args.batch_size * jax.device_count()
     cf.optimizer.lr = args.learning_rate
+    cf.tune_style = args.tune_style
     cf.tag = args.tag
 
     train_and_evaluate(cf)

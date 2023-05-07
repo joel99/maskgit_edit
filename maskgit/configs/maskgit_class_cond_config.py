@@ -25,6 +25,7 @@ def get_config():
   config.experiment = "maskgit_class_cond"
   config.model_class = "maskgit_class_cond"
   config.sequence_order = "horizontal"
+  config.tune_style = "iterate"
 
   config.num_class = 1000
   config.batch_size = 256

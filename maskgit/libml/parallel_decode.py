@@ -332,15 +332,18 @@ def decode_context_guidance(inputs,
     rng, sample_rng = jax.random.split(rng, 2)
     # Current input ids: [batch_size, seq_length].
     cur_ids = state.cur_seqs
+    unknown_map = (cur_ids == mask_token_id)
+
+    # Move mask calculations upfront, so we can decide how much guidance to use.
+    # Mask length determines the number of tokens we want masked in the end, and thus the number we replace with guidance.
 
     ratio = 1. * step / num_iter
     mask_ratio = mask_schedule.schedule(ratio, unknown_number_in_the_beginning,
                                         mask_scheduling_method)
+
     # Gets mask lens for each sample in the batch according to the mask ratio.
     mask_len = jnp.expand_dims(
         jnp.floor(unknown_number_in_the_beginning * mask_ratio), 1)
-    # This is the number of tokens we want masked at the end, and thus the number we replace with guidance.
-    unknown_map = (cur_ids == mask_token_id)
     # Keeps at least one of prediction in this round and also masks out at least
     # one and for the next iteration
     mask_len = jnp.maximum(
@@ -364,7 +367,7 @@ def decode_context_guidance(inputs,
     rng, choice_rng = jax.random.split(rng)
     masking = mask_by_random_topk(choice_rng, mask_len, selected_probs,
                                   choice_temperature * (1. - ratio))
-    # Masks tokens with lower confidence (i.e. keep current, which )
+    # Based on previous round's confidence, provide guidance.
     guided_ids = jnp.where(masking, guidance, cur_ids)
     # sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
 
@@ -376,6 +379,7 @@ def decode_context_guidance(inputs,
     # Updates final seqs with the current sampled_ids.
     final_seqs = jax.lax.dynamic_update_slice(
         state.final_seqs, jnp.expand_dims(sampled_ids, axis=1), (0, step, 0))
+    # Use the same pre-determined mask for the next round
     sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
 
     return StateWithLogits(
@@ -502,7 +506,7 @@ def decode_logit_flax_scan(inputs,
            start_iter=0,
            choice_temperature=1.0,
            mask_scheduling_method="cosine"):
-  """Fast decoding for TUNING iterative generation. Stops gradient before all but last iteration
+  """Fast decoding for TUNING iterative generation.
 
   Args:
     inputs: int32 array: [batch_size, seq_length] input sequence of masked
@@ -525,12 +529,12 @@ def decode_logit_flax_scan(inputs,
   unknown_number_in_the_beginning = jnp.sum(inputs == mask_token_id, axis=-1)
   init_state = state_init_with_logits(inputs, rng, num_iter, codebook_size, start_iter=start_iter)
 
-  def loop_body_fn(mdl, state: StateWithLogits, x):
+  def loop_body_fn(mdl, state: StateWithLogits):
       rng = state.rng
       step = state.cur_index
       cur_ids = state.cur_seqs
-      if step == state.num_iter - 1:
-        cur_ids = jax.lax.stop_gradient(cur_ids)
+      # if step == state.final_seqs.shape - 1: # Nop, if statements are illegal.
+      #   cur_ids = jax.lax.stop_gradient(cur_ids)
 
       logits = mdl(cur_ids)
       logits = logits[..., :codebook_size]
@@ -572,5 +576,88 @@ def decode_logit_flax_scan(inputs,
     loop_body_fn, variable_broadcast="params",
     split_rngs={"params": False},
     length=num_iter - start_iter)
-  final_state, _ = scan(module, init_state, None) # No input, just the carry
+  final_state, _ = scan(module, init_state) # No input, just the carry
   return final_state.logits
+
+def decode_logit_flax_manual(inputs,
+           rng,
+           module,
+           codebook_size=8192,
+           mask_token_id=-1,
+           num_iter=2,
+           start_iter=0,
+           choice_temperature=1.0,
+           mask_scheduling_method="cosine",
+           iterate_guidance=False,
+           reweight_guidance=False,
+  ):
+  """Fast decoding for TUNING iterative generation. Manual unroll. Only supports 2 iterations.
+  Stops gradient before all but last iteration
+
+  Args:
+    inputs: int32 array: [batch_size, seq_length] input sequence of masked
+      tokens, where the masking tokens is defined by mask_token_id.
+    rng: jnp.DeviceArray: sampling random state.
+    tokens_to_logits: decoder function taking single token slices and cache and
+      returning logits and updated cache.
+    mask_token_id: int: [Mask] token id.
+    num_iter: int: default is 12.
+    start_iter: int: default is 0.
+    choice_temperature: float: temperature to control the randomness of masking.
+    mask_scheduling_method: masking method string. See mask_schedule.py for
+      details.
+
+  Returns:
+     [batch_size, num_iter, seq_length] output sequence of tokens in all
+       iterations.
+  """
+  unknown_number_in_the_beginning = jnp.sum(inputs == mask_token_id, axis=-1)
+  init_state = state_init_with_logits(inputs, rng, num_iter, codebook_size, start_iter=start_iter)
+
+
+  def loop_body_fn(mdl, state: StateWithLogits, guidance=None, stop_grad=False):
+      rng = state.rng
+      step = state.cur_index
+      cur_ids = state.cur_seqs
+      if stop_grad:
+        cur_ids = jax.lax.stop_gradient(cur_ids)
+      logits = mdl(cur_ids, guidance_ids=guidance if iterate_guidance else None)
+      logits = logits[..., :codebook_size]
+      rng, sample_rng = jax.random.split(rng, 2)
+      sampled_ids = jax.random.categorical(sample_rng, logits)
+
+      unknown_map = (cur_ids == mask_token_id)
+      sampled_ids = jnp.where(unknown_map, sampled_ids, cur_ids)
+      ratio = 1. * (step + 1) / num_iter
+      mask_ratio = mask_schedule.schedule(ratio, unknown_number_in_the_beginning,
+                                          mask_scheduling_method)
+      final_seqs = jax.lax.dynamic_update_slice(
+          state.final_seqs, jnp.expand_dims(sampled_ids, axis=1), (0, step, 0))
+      probs = jax.nn.softmax(logits, axis=-1)
+      selected_probs = jnp.squeeze(
+          jnp.take_along_axis(probs, jnp.expand_dims(sampled_ids.astype(jnp.int16), -1), -1), -1)
+      selected_probs = jnp.where(unknown_map, selected_probs,
+                                _CONFIDENCE_OF_KNOWN_TOKENS)
+      mask_len = jnp.expand_dims(
+          jnp.floor(unknown_number_in_the_beginning * mask_ratio), 1)
+      mask_len = jnp.maximum(
+          1,
+          jnp.minimum(jnp.sum(unknown_map, axis=-1, keepdims=True) - 1, mask_len))
+
+      rng, choice_rng = jax.random.split(rng)
+      masking = mask_by_random_topk(choice_rng, mask_len, selected_probs,
+                                    choice_temperature * (1. - ratio))
+      retained_guidance = jnp.where(masking, sampled_ids, 0)
+      sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
+      return StateWithLogits(
+          cur_index=state.cur_index + 1,
+          cur_seqs=sampled_ids,
+          rng=rng,
+          final_seqs=final_seqs,
+          logits=logits,
+      ), jax.lax.stop_gradient(retained_guidance), selected_probs # don't need anything but final logit which I keep in state
+
+  # Replace the while loop with a call to lax.scan.
+  scan_state, guidance, selected_probs = loop_body_fn(module, init_state)
+  scan_state = loop_body_fn(module, scan_state, guidance=guidance, stop_grad=True)[0]
+  return scan_state.logits
