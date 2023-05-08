@@ -30,6 +30,7 @@ from typing import Dict, List
 import argparse
 from pathlib import Path
 from absl import logging
+from flax import traverse_util
 from flax import linen as nn
 from flax.training import train_state
 import flax.jax_utils as jax_utils
@@ -101,8 +102,8 @@ def predict_step(state: train_state.TrainState, batch, model_rng):
         label_smoothing=0.1,
     ).mean()
     metrics = {
-        'loss': loss,
-        'accuracy': jnp.mean(jnp.argmax(logits, -1) == code_labels),
+        'loss': jax.lax.pmean(loss, axis_name='batch'),
+        'accuracy': jax.lax.pmean(jnp.mean(jnp.argmax(logits, -1) == code_labels), axis_name='batch'),
     }
     return metrics
 
@@ -115,8 +116,8 @@ def accumulate_metrics(batch_metrics: List[Dict[str, np.ndarray]]):
 def simplify_metrics(metrics):
     return {k: v[0] if jax.local_device_count() > 1 else v for k, v in metrics.items()}
 
-def train_epoch(state, train_dl, model_rng, global_step=0, mini_epoch_state=0, mini_epoch_steps=32): # we can't afford a full train, break every mini_epoch_steps
-    train_batch_metrics = []
+def train_epoch(state, train_dl, model_rng, global_step=0, mini_epoch_state=0, mini_epoch_steps=64): # we can't afford a full train, break every mini_epoch_steps
+    # train_batch_metrics = []
 
     for i, batch in enumerate(train_dl):
         if i < mini_epoch_state:
@@ -135,12 +136,11 @@ def train_epoch(state, train_dl, model_rng, global_step=0, mini_epoch_state=0, m
             }
             print(f'train step {global_step + i}: {log_metric}')
             wandb.log(log_metric, step=global_step + i)
-        train_batch_metrics.append(metrics)
-        # if i > 5:
-            # break # testing checkpointing.
-    train_batch_metrics = accumulate_metrics(train_batch_metrics)
+        global_step += 1
+        # train_batch_metrics.append(metrics)
+    # train_batch_metrics = accumulate_metrics(train_batch_metrics)
 
-    return state, train_batch_metrics, global_step, mini_epoch_state + mini_epoch_steps
+    return state, global_step, mini_epoch_state + mini_epoch_steps
 
 def test_epoch(state, test_dl, model_rng, global_step=0, mini_eval_steps=32):
     test_batch_metrics = []
@@ -157,8 +157,6 @@ def test_epoch(state, test_dl, model_rng, global_step=0, mini_eval_steps=32):
         if i % 10 == 0:
             print(f'test step {global_step + i}: {log_metric}')
         test_batch_metrics.append(metrics)
-        # if i > 5:
-            # break
     test_batch_metrics = accumulate_metrics(test_batch_metrics)
     wandb.log(test_batch_metrics, step=global_step)
     return test_batch_metrics
@@ -171,16 +169,26 @@ def create_train_state(rng, config, model: ImageNet_class_conditional_generator_
     # JY: base training has warmup and standard things but we're fine-tuning, hopefully this works without those complications
     x = (jnp.ones((1, 256, 256, 3), jnp.float32), jnp.ones((1,), jnp.int32))
     init_rng, call_rng = jax.random.split(rng)
+
     variables = model.init(init_rng, x, call_rng)
     params = variables['params']
     params = params.unfreeze()
     if USE_PRETRAINED:
         params['transformer_model'] = pt_vars['params']
     params = freeze(params)
-    tx = optax.chain( # https://github.com/deepmind/optax/issues/472
+
+    tx_train = optax.chain( # https://github.com/deepmind/optax/issues/472
         optax.adamw(config.optimizer.lr, b1=config.optimizer.beta1, b2=config.optimizer.beta2, weight_decay=config.optimizer.weight_decay),
         optax.apply_every(k=16)
     )
+    if config.tune_style == 'reweight':
+        partition_optimizers = {'trainable': tx_train, 'frozen': optax.set_to_zero()}
+        param_partitions = freeze(traverse_util.path_aware_map(
+            lambda path, v: 'frozen' if 'transformer_model' in path else 'trainable', params))
+        tx = optax.multi_transform(partition_optimizers, param_partitions)
+    else:
+        tx = tx_train
+
     # tx = optax.MultiSteps(
     #     optax.adamw(config.optimizer.lr, b1=config.optimizer.beta1, b2=config.optimizer.beta2, weight_decay=config.optimizer.weight_decay),
     #     every_k_schedule=10, # Make up for absurdly small memory budget...
@@ -212,6 +220,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
     Returns:
         The train state (which includes the `.params`).
     """
+
     train_ds, test_ds = get_datasets()
     train_dl = NumpyLoader(
         train_ds, batch_size=config.batch_size, num_workers=8,
@@ -232,7 +241,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
 
     rng, init_rng = jax.random.split(rng)
     transformer, transformer_vars = ImageNet_class_conditional_generator_module.load_transformer_model_and_vars(config)
-    model = ImageNet_class_conditional_generator_module(transformer)
+
+    model = ImageNet_class_conditional_generator_module(transformer, config)
     state = create_train_state(init_rng, config, model, transformer_vars)
 
     best_loss = 1e9
@@ -247,7 +257,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict) -> train_state.TrainSt
             state = jax_utils.replicate(state)
             model_rng = jax.random.split(model_rng, jax.local_device_count())
 
-        state, train_metrics, step, mini_step = train_epoch(state, train_dl, model_rng, global_step=step, mini_epoch_state=mini_step)
+        state, step, mini_step = train_epoch(state, train_dl, model_rng, global_step=step, mini_epoch_state=mini_step)
         test_metrics = test_epoch(state, test_dl, model_rng)
 
         if jax.local_device_count() > 1:

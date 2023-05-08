@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+from typing import Optional
 import os
 import io
 import flax
@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 from jax import random
 import math
+import ml_collections
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -37,27 +38,43 @@ from maskgit.inference import ImageNet_class_conditional_generator
 #TODO: compress by subclassing the og generator
 class ImageNet_class_conditional_generator_module(nn.Module):
     transformer_model: maskgit_transformer.Transformer
-    # distance_matrix: jnp.ndarray
+    maskgit_cf: ml_collections.ConfigDict
+    # reweight_kernel: jnp.ndarray
 
     def checkpoint_canonical_path(maskgit_or_tokenizer, image_size):
         return f"./checkpoints/{maskgit_or_tokenizer}_imagenet{image_size}_checkpoint"
 
-    def setup(self, image_size=256):
-        maskgit_cf = maskgit_class_cond_config.get_config()
-        maskgit_cf.image_size = int(image_size)
-        maskgit_cf.eval_batch_size = 8
+    def setup(self):
+
+        # maskgit_cf = maskgit_class_cond_config.get_config()
+        self.maskgit_cf.image_size = 256
+        self.maskgit_cf.eval_batch_size = 8
 
         # Define tokenizer
-        self.tokenizer_model = vqgan_tokenizer.VQVAE(config=maskgit_cf, dtype=jnp.float32, train=False)
+        self.tokenizer_model = vqgan_tokenizer.VQVAE(config=self.maskgit_cf, dtype=jnp.float32, train=False)
 
         # Define transformer
-        self.transformer_latent_size = maskgit_cf.image_size // maskgit_cf.transformer.patch_size
-        self.transformer_codebook_size = maskgit_cf.vqvae.codebook_size + maskgit_cf.num_class + 1
+        self.transformer_latent_size = self.maskgit_cf.image_size // self.maskgit_cf.transformer.patch_size
+        self.transformer_codebook_size = self.maskgit_cf.vqvae.codebook_size + self.maskgit_cf.num_class + 1
         self.transformer_block_size = self.transformer_latent_size ** 2 + 1
-
-        self.maskgit_cf = maskgit_cf
-
         self._load_checkpoints()
+
+        def custom_init(*args, **kwargs):
+            codebook = self.tokenizer_model.apply(
+                self.tokenizer_variables,
+                method=self.tokenizer_model.get_codebook_funct,
+                mutable=False
+            )
+            difference = codebook[:, None, :] - codebook[None, :, :] # N x N x D
+            return -jnp.mean(difference ** 2, axis=-1) # N x N
+        if self.maskgit_cf.tune_style == "reweight":
+            self.reweight_kernel = self.param("reweight_kernel", custom_init) # , (self.maskgit_cf.vqvae.codebook_size, self.maskgit_cf.vqvae.codebook_size))
+            # self.reweight_kernel = self.param("reweight_kernel", nn.initializers.lecun_normal(), (self.maskgit_cf.vqvae.codebook_size, self.maskgit_cf.vqvae.codebook_size))
+        else:
+            self.reweight_kernel = None
+
+        # self.maskgit_cf = maskgit_cf
+
 
     def _load_checkpoints(self):
         image_size = self.maskgit_cf.image_size
@@ -81,8 +98,18 @@ class ImageNet_class_conditional_generator_module(nn.Module):
             hidden_dropout_prob=maskgit_cf.transformer.dropout_rate,
             attention_probs_dropout_prob=maskgit_cf.transformer.dropout_rate,
             max_position_embeddings=transformer_block_size)
-        return transformer_model, restore_from_path(
+        tf_vars = restore_from_path(
             ImageNet_class_conditional_generator.checkpoint_canonical_path("maskgit", maskgit_cf.image_size))
+        all_vars = tf_vars
+        # if maskgit_cf.tune_style == 'reweight':
+        #     breakpoint()
+        #     distance_vars = jnp.random.normal(transformer_codebook_size, transformer_codebook_size)
+        #     all_vars = {'params': {
+        #         **tf_vars['params'],
+        #         'distance': distance_vars
+        #     }}
+        return transformer_model, all_vars
+
 
     def generate_samples(self, input_tokens, rng, start_iter=0, num_iterations=16):
         def tokens_to_logits(seq):
@@ -168,9 +195,6 @@ class ImageNet_class_conditional_generator_module(nn.Module):
             method=self.tokenizer_model.encode_to_indices,
             mutable=False)
 
-        # TODO multi-step MVTM and assert known tokens (meh, can just do that at inference)
-        # Asserting known tokens needs to be done if we want to work with stroke skyline.
-
         image_tokens = np.reshape(image_tokens, [image_tokens.shape[0], -1]).astype("int32")
         initial_mask_ratio = random.uniform(rng, shape=(1,)) # whatever, broadcast throws if we try to get a random per example
         latent_mask = random.bernoulli(
@@ -185,9 +209,6 @@ class ImageNet_class_conditional_generator_module(nn.Module):
         # Concatenate the two as input_tokens
         input_tokens = jnp.concatenate([image_cls_tokens, masked_tokens], axis=-1)
 
-        # if self.transformer_model.is_mutable_collection("params"):
-        #     # TODO: low pri - this is redundantly called everytime. How can I just call it once for init? (We need to do a proper init despite pretraining bc model.init must be called before we can transfer in weights)
-        #     init_vars = self.transformer_model(input_tokens) # https://flax.readthedocs.io/en/latest/api_reference/_autosummary/flax.linen.while_loop.html - consider initializing before
         output_logits = parallel_decode.decode_logit_flax_manual(
             input_tokens,
             rng,
@@ -199,6 +220,7 @@ class ImageNet_class_conditional_generator_module(nn.Module):
             start_iter=0,
             iterate_guidance=self.maskgit_cf.tune_style == "iterate",
             reweight_guidance=self.maskgit_cf.tune_style == "reweight",
+            reweight_kernel=self.reweight_kernel,
         )
         output_logits = output_logits[:, 1:] # since class label is first token
         return output_logits, image_tokens, latent_mask # initial mask

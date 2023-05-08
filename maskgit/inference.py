@@ -72,8 +72,9 @@ class ImageNet_class_conditional_generator():
         self.tokenizer_variables = restore_from_path(
             ImageNet_class_conditional_generator.checkpoint_canonical_path("tokenizer", image_size))
 
+    @staticmethod
     def get_guidance_energy(
-        self, self_guidance_style, codebook # N x D
+        self_guidance_style, codebook # N x D
     ): # return N x N
         # technically None should also provide clean implementation
         if self_guidance_style == "l2":
@@ -112,7 +113,7 @@ class ImageNet_class_conditional_generator():
                     choice_temperature=self.maskgit_cf.sample_choice_temperature,
                     mask_token_id=self.maskgit_cf.transformer.mask_token_id,
                     start_iter=start_iter,
-                    self_guidance=self.get_guidance_energy(self_guidance_style, codebook),
+                    self_guidance=ImageNet_class_conditional_generator.get_guidance_energy(self_guidance_style, codebook),
                     fidelity=self_guidance_lambda,
                 )
             if context_guidance:

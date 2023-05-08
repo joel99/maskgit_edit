@@ -187,6 +187,24 @@ def decode(inputs,
   final_state = lax.while_loop(loop_cond_fn, loop_body_fn, init_state)
   return final_state.final_seqs
 
+def rescale_confidence(confidence: float, temp_min: float = 1e-6, temp_max: float = 100):
+  """Rescales confidence from 0-1 to a more drastic scale logarithmically"""
+  return jnp.exp(jnp.log(temp_min) + jnp.minimum(jnp.maximum(confidence, 0), 1) * (jnp.log(temp_max) - jnp.log(temp_min)))
+
+def guidance_to_reweight(reweight_kernel: jnp.ndarray, guidance: jnp.ndarray, confidence: jnp.ndarray):
+  r"""
+    reweight_kernel: C x C
+    guidance: B S, first token for cls dropped
+    confidence: B S, ^
+
+    return: B S C
+  """
+  guidance = reweight_kernel[guidance[:, 1:]]
+  reweight = jax.nn.softmax(guidance * rescale_confidence(confidence[:, 1:, None]), axis=-1)
+  reweight = reweight / jnp.mean(reweight, axis=-1, keepdims=True) # This will blow up if delta distribution, but that should only for extreme confidence, which never happens AFAIC
+  reweight = jnp.concatenate([jnp.ones([reweight.shape[0], 1, reweight.shape[-1]]), reweight], axis=1)
+  return reweight
+
 def decode_self_guidance(inputs,
            guidance, # unmasked, [batch_size, seq_length]
            rng,
@@ -197,7 +215,7 @@ def decode_self_guidance(inputs,
            choice_temperature=1.0,
            mask_scheduling_method="cosine",
            self_guidance=None, # Code x Code matrix. No need for normalization, an energy is fine.
-           fidelity=1., # exponential in mixing
+           confidence=1., # exponential in mixing
   ):
   inputs = inputs.astype("int32")
   guidance = guidance.astype("int32")
@@ -208,10 +226,11 @@ def decode_self_guidance(inputs,
   if self_guidance is None:
     self_guidance_weighted = jnp.eye(guidance.shape[0], dtype=jnp.float32)
   else:
-    # Use fidelity as boltzmann temperature for self_guidance
-    self_guidance_weighted = jax.nn.softmax(self_guidance / fidelity, axis=-1)
+    breakpoint()
     # guidance shape is arbitrary, what we want is to index, not mat mul
-    self_guidance_weighted = self_guidance_weighted[guidance[:, 1:]] # * 1: to remove cls token
+    self_guidance = self_guidance[guidance[:, 1:]] # * 1: to remove cls token
+    # Use fidelity as boltzmann temperature for self_guidance
+    self_guidance_weighted = jax.nn.softmax(self_guidance * rescale_confidence(confidence), axis=-1) # epsilon
     # Normalize so mean of each row is 1 - i.e. if extremely high temperature, then all are equally likely
     self_guidance_weighted = self_guidance_weighted / jnp.mean(self_guidance_weighted, axis=-1, keepdims=True)
   # Concatenate a uniform guidance for first (the class token)
@@ -590,6 +609,7 @@ def decode_logit_flax_manual(inputs,
            mask_scheduling_method="cosine",
            iterate_guidance=False,
            reweight_guidance=False,
+           reweight_kernel=None,
   ):
   """Fast decoding for TUNING iterative generation. Manual unroll. Only supports 2 iterations.
   Stops gradient before all but last iteration
@@ -615,18 +635,22 @@ def decode_logit_flax_manual(inputs,
   init_state = state_init_with_logits(inputs, rng, num_iter, codebook_size, start_iter=start_iter)
 
 
-  def loop_body_fn(mdl, state: StateWithLogits, guidance=None, stop_grad=False):
+  def loop_body_fn(mdl, state: StateWithLogits, guidance=None, confidence=None, stop_grad=False):
       rng = state.rng
       step = state.cur_index
       cur_ids = state.cur_seqs
       if stop_grad:
         cur_ids = jax.lax.stop_gradient(cur_ids)
+      unknown_map = (cur_ids == mask_token_id)
       logits = mdl(cur_ids, guidance_ids=guidance if iterate_guidance else None)
       logits = logits[..., :codebook_size]
+      if reweight_guidance and guidance is not None:
+        reweight = guidance_to_reweight(reweight_kernel, guidance, confidence)
+        reweight = jnp.where(unknown_map[..., None], reweight, 1.)
+        logits = logits * reweight
       rng, sample_rng = jax.random.split(rng, 2)
       sampled_ids = jax.random.categorical(sample_rng, logits)
 
-      unknown_map = (cur_ids == mask_token_id)
       sampled_ids = jnp.where(unknown_map, sampled_ids, cur_ids)
       ratio = 1. * (step + 1) / num_iter
       mask_ratio = mask_schedule.schedule(ratio, unknown_number_in_the_beginning,
@@ -647,7 +671,7 @@ def decode_logit_flax_manual(inputs,
       rng, choice_rng = jax.random.split(rng)
       masking = mask_by_random_topk(choice_rng, mask_len, selected_probs,
                                     choice_temperature * (1. - ratio))
-      retained_guidance = jnp.where(masking, sampled_ids, 0)
+      retained_guidance = jnp.where(masking, sampled_ids, mask_token_id)
       sampled_ids = jnp.where(masking, mask_token_id, sampled_ids)
       return StateWithLogits(
           cur_index=state.cur_index + 1,
@@ -659,5 +683,5 @@ def decode_logit_flax_manual(inputs,
 
   # Replace the while loop with a call to lax.scan.
   scan_state, guidance, selected_probs = loop_body_fn(module, init_state)
-  scan_state = loop_body_fn(module, scan_state, guidance=guidance, stop_grad=True)[0]
+  scan_state = loop_body_fn(module, scan_state, guidance=guidance, confidence=selected_probs, stop_grad=True)[0]
   return scan_state.logits
