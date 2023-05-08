@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import os.path as osp
 import io
 import flax
 import functools
@@ -25,6 +26,7 @@ import matplotlib.patches as patches
 import numpy as np
 from PIL import ImageFilter, Image
 import requests
+import orbax.checkpoint
 # import tensorflow.compat.v1 as tf
 
 from maskgit.nets import vqgan_tokenizer, maskgit_transformer
@@ -38,7 +40,7 @@ class ImageNet_class_conditional_generator():
     def checkpoint_canonical_path(maskgit_or_tokenizer, image_size):
         return f"./checkpoints/{maskgit_or_tokenizer}_imagenet{image_size}_checkpoint"
 
-    def __init__(self, image_size=256):
+    def __init__(self, image_size=256, wandb_id="", tune_style="iterate"):
         maskgit_cf = maskgit_class_cond_config.get_config()
         maskgit_cf.image_size = int(image_size)
         maskgit_cf.eval_batch_size = 8
@@ -61,16 +63,32 @@ class ImageNet_class_conditional_generator():
             max_position_embeddings=self.transformer_block_size)
 
         self.maskgit_cf = maskgit_cf
+        if tune_style == "reweight":
+            self.reweight_kernel = jnp.ones((self.maskgit_cf.vqvae.codebook_size, self.maskgit_cf.vqvae.codebook_size), dtype=jnp.float32)
+        else:
+            self.reweight_kernel = None
 
-        self._load_checkpoints()
+        self._load_checkpoints(wandb_id)
 
-    def _load_checkpoints(self):
+    def _load_checkpoints(self, wandb_id=""):
         image_size = self.maskgit_cf.image_size
 
-        self.transformer_variables = restore_from_path(
-            ImageNet_class_conditional_generator.checkpoint_canonical_path("maskgit", image_size))
         self.tokenizer_variables = restore_from_path(
             ImageNet_class_conditional_generator.checkpoint_canonical_path("tokenizer", image_size))
+        if wandb_id:
+            orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+            wandb_dir = f"./checkpoints/default_{wandb_id}/"
+            # get latest subdir by time, which is lowest loss
+            latest_subdir = sorted(os.listdir(wandb_dir), key=lambda x: os.path.getmtime(os.path.join(wandb_dir, x)))[-1]
+            raw_restored = orbax_checkpointer.restore(osp.join(wandb_dir, latest_subdir, 'default'))['params']
+            # breakpoint()
+            self.transformer_variables = {'params': raw_restored["transformer_model"]}
+            if self.reweight_kernel is not None:
+                self.reweight_kernel = jnp.array(raw_restored["reweight_kernel"])
+                # JY: Note that the actual learned kernel is scarcely different than the initial kernel by manual inspection of weights (i.e. 8.44 -> 8.45)
+        else:
+            self.transformer_variables = restore_from_path(
+                ImageNet_class_conditional_generator.checkpoint_canonical_path("maskgit", image_size))
 
     @staticmethod
     def get_guidance_energy(
@@ -80,6 +98,8 @@ class ImageNet_class_conditional_generator():
         if self_guidance_style == "l2":
             difference = codebook[:, None, :] - codebook[None, :, :] # N x N x D
             return -jnp.mean(difference ** 2, axis=-1) # N x N
+        elif self_guidance_style == "eye":
+            return jnp.eye(codebook.shape[0])
         elif self_guidance_style == "knn":
             raise NotImplementedError
         else:
@@ -95,49 +115,72 @@ class ImageNet_class_conditional_generator():
         codebook=None,
         context_guidance=False,
         self_guidance_lambda=1.0,
-        self_guidance_style="l2", # todo extend to knn. Note we set to -inf there, not 0, since this is energy.
+        self_guidance_style="l2", # [iterate, eye, l2, learned]
     ):
-        def tokens_to_logits(seq):
-            logits = self.transformer_model.apply(self.transformer_variables, seq, deterministic=True)
-            logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
-            return logits
-        assert not context_guidance and self_guidance_lambda, "Guidance is mutually exclusive in current implementation."
-        if guidance is not None:
-            if self_guidance_lambda:
-                output_tokens = parallel_decode.decode_self_guidance(
-                    input_tokens,
-                    guidance,
-                    rng,
-                    tokens_to_logits,
-                    num_iter=num_iterations,
-                    choice_temperature=self.maskgit_cf.sample_choice_temperature,
-                    mask_token_id=self.maskgit_cf.transformer.mask_token_id,
-                    start_iter=start_iter,
-                    self_guidance=ImageNet_class_conditional_generator.get_guidance_energy(self_guidance_style, codebook),
-                    fidelity=self_guidance_lambda,
-                )
-            if context_guidance:
-                output_tokens = parallel_decode.decode_context_guidance(
-                    input_tokens,
-                    guidance,
-                    rng,
-                    tokens_to_logits,
-                    codebook_size=self.maskgit_cf.vqvae.codebook_size,
-                    num_iter=num_iterations,
-                    choice_temperature=self.maskgit_cf.sample_choice_temperature,
-                    mask_token_id=self.maskgit_cf.transformer.mask_token_id,
-                    start_iter=start_iter,
-                )
-        else:
-            output_tokens = parallel_decode.decode(
+        if self_guidance_style == "iterate":
+            def tokens_to_logits(seq, guide):
+                logits = self.transformer_model.apply(self.transformer_variables, seq, guidance_ids=guide, deterministic=True) # TODO use guide
+                logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
+                return logits
+            output_tokens = parallel_decode.decode_self_guidance_iterate(
                 input_tokens,
+                guidance,
                 rng,
                 tokens_to_logits,
                 num_iter=num_iterations,
                 choice_temperature=self.maskgit_cf.sample_choice_temperature,
                 mask_token_id=self.maskgit_cf.transformer.mask_token_id,
                 start_iter=start_iter,
+                self_guidance=None,
+                confidence=self_guidance_lambda,
             )
+        else:
+            def tokens_to_logits(seq):
+                logits = self.transformer_model.apply(self.transformer_variables, seq, deterministic=True)
+                logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
+                return logits
+            assert not (context_guidance and self_guidance_lambda), "Guidance is mutually exclusive in current implementation."
+            if guidance is not None:
+                if context_guidance:
+                    output_tokens = parallel_decode.decode_context_guidance(
+                        input_tokens,
+                        guidance,
+                        rng,
+                        tokens_to_logits,
+                        codebook_size=self.maskgit_cf.vqvae.codebook_size,
+                        num_iter=num_iterations,
+                        choice_temperature=self.maskgit_cf.sample_choice_temperature,
+                        mask_token_id=self.maskgit_cf.transformer.mask_token_id,
+                        start_iter=start_iter,
+                    )
+                else:
+                    if self_guidance_style == "learned":
+                        assert self.reweight_kernel is not None
+                        self_guidance = self.reweight_kernel
+                    else:
+                        self_guidance = ImageNet_class_conditional_generator.get_guidance_energy(self_guidance_style, codebook)
+                    output_tokens = parallel_decode.decode_self_guidance(
+                        input_tokens,
+                        guidance,
+                        rng,
+                        tokens_to_logits,
+                        num_iter=num_iterations,
+                        choice_temperature=self.maskgit_cf.sample_choice_temperature,
+                        mask_token_id=self.maskgit_cf.transformer.mask_token_id,
+                        start_iter=start_iter,
+                        self_guidance=self_guidance,
+                        confidence=self_guidance_lambda,
+                    )
+            else:
+                output_tokens = parallel_decode.decode(
+                    input_tokens,
+                    rng,
+                    tokens_to_logits,
+                    num_iter=num_iterations,
+                    choice_temperature=self.maskgit_cf.sample_choice_temperature,
+                    mask_token_id=self.maskgit_cf.transformer.mask_token_id,
+                    start_iter=start_iter,
+                )
 
         output_tokens = jnp.reshape(output_tokens[:, -1, 1:], [-1, self.transformer_latent_size, self.transformer_latent_size])
         gen_images = self.tokenizer_model.apply(

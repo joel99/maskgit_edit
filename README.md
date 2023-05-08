@@ -26,24 +26,36 @@ First, MaskGIT is a Vector-Quantized Transformer that first encodes image patche
 Thus, MaskGIT does not by default condition in $E$ to sample $X_E$. We must either tune the model to do so, or heuristically hack the inference process. In either case, we split the conditioning into two pieces: for a particular $X_{j \in E}$, can we use $G_j$ (self-guidance) and $G_{E \setminus j}$ (context-guidance)?
 
 **Non-tuning Heuristics**
-- Context-guidance can be used by manipulating inference. At each step of ancestral sampling, we replace the previous round's least confident samples with guidance. (See `maskgit/libml/parallel_decode.decode_context_guidance`)
-- Self-guidance can reweight sampled confidences via a pre-specified distance metric. I use L2.
+- `Context-guidance`: can be applied by manipulating inference. At each step of ancestral sampling, we replace the previous round's least confident samples with guidance. (See `maskgit/libml/parallel_decode.decode_context_guidance`)
+- `Self-guidance, fixed`: can reweight sampled confidences via a pre-specified distance metric. I use L2.
 
 **Tuning**
-- Both forms of guidance might be achieved if the model can be trained to use low confidence samples -- such as those produced in its own iterative sampling. I implement this by retaining the low-confidence samplesd tokens from an initial iteration and adding their embedding to another iteration (See `maskgit.nets.maskgit_transformer`). Guidance can then be provided at test-time identically to how it's provided in modified training.
-- Learned reweighting for self-guidance: by learning a thin reweighting matrix of size $C \times C$ (representing affinities between the $C$ codes), we can attempt to learn self-guidance without worrying about overfit in the Transformer.
+- `Iterative generation`: Both forms of guidance might be achieved if the model can be trained to use low confidence samples -- such as those produced in its own iterative sampling. I implement this by retaining the low-confidence samplesd tokens from an initial iteration and adding their embedding to another iteration (See `maskgit.nets.maskgit_transformer`). Guidance can then be provided at test-time identically to how it's provided in modified training.
+- `Self-guidance, learned`: by learning a thin reweighting matrix of size $C \times C$ (representing affinities between the $C$ codes), we can attempt to learn self-guidance without worrying about overfit in the Transformer.
 
 
 ### Implementation Note
-We use the open-sourced MaskGIT repo -- unfortunately this only had an inference demo so much effort was directed to setting up a training pipeline; this kind of killed most progress on the project.
+We use the open-sourced MaskGIT repo -- unfortunately this only had an inference demo so much effort was directed to setting up a training pipeline. Being in JAX... this killed progress. My end training pipeline kept OOM-ing on my ~10G nodes essentially until a batch size of 1 ([wandb logs](https://wandb.ai/joelye9/maskgit_edit)) which led to very humble fine-tuning efforts.
 
 The open MaskGIT weights are only on ImageNet, so we use those.
 
 ## Results
 
+We perform a qualitative evaluation on automatically generated "strokes" using an algorithm similar to that described in SDEdit's auto-stroke generation. We use two settings; "stroke inversion" where a stroke-segmented region is assigned the mean color of pixels in the region, and "stroke counterfactual" where the stroke is assigned a randomly generated color. The other various datasets in SDEdit were difficult to compare with as it was unclear to me how to generate those edited images; moreover the pretrained MaskGIT was only for ImageNet. See `make_strokes.py`.
+We compare the aforementioned variants:
+1. Baseline (no guidance). Should be the most photorealistic.
+2. Context guidance only
+3. Self-guidance fixed: Identity matrix
+4. Self-guidance fixed: Code L2
+5. Self-guidance learned: Code L2 init
+- We observe in this case that the learned weights does not deviate greatly from the original matrix. For example, an initial distance energy of 8 might change to 8.05.
+- For the self-guidance variants, we try 3 confidences each.
+6. Self-guidance, iterative generation.
+We do not compare combinations of self-guidance and context-guidance as context-guidance proves too strong a signal to apply directly, and there is no clear way to titrate its influence. It may have been useful for other types of user guidance, such as nearly realistic strokes anyway (e.g. photoshopped glasses)
 
+We sample 3 ImageNet classes and 8 samples per variant.
 
-## Comparisons and Ablations
+## Commentary
 
 
 

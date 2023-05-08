@@ -28,14 +28,22 @@ from maskgit.utils import (
     # draw_image_with_mask # TODO implement a highlight
 )
 from maskgit.inference import ImageNet_class_conditional_generator
+from maskgit.model import ImageNet_class_conditional_generator_module
 
 from maskgit.notebook_utils import (
     download_if_needed, imagenet_categories, load_class_to_id_map
 )
 download_if_needed()
 
+wandb_id = "ytgj3lyd" # reweight 1e-5
+wandb_id = "om8dz3k5" # reweight 1e-4 - curve has no difference
+wandb_id = "lncehv2l" # iterate
+tune_style = "iterate" if wandb_id in [
+    "lncehv2l",
+] else "reweight"
+
 image_size = 256
-generator_256 = ImageNet_class_conditional_generator(image_size=image_size)
+generator_256 = ImageNet_class_conditional_generator(image_size=256, wandb_id=wandb_id, tune_style=tune_style)
 generator_256.maskgit_cf.eval_batch_size = 4
 arbitrary_seed = 42
 rng = jax.random.PRNGKey(arbitrary_seed)
@@ -80,8 +88,9 @@ SRC = 'stroke'
 CONTEXT_GUIDANCE = False
 # CONTEXT_GUIDANCE = True
 
-SELF_GUIDANCE_FIDELITY = 1e3
-SELF_GUIDANCE_STYLE = 'l2'
+SELF_GUIDANCE_CONFIDENCE = 0.1
+# SELF_GUIDANCE_STYLE = 'l2'
+SELF_GUIDANCE_STYLE = "learned"
 
 image = get_data(fns[0])[SRC]
 if MODE == 'bbox':
@@ -115,11 +124,11 @@ if run_mode == 'normal':
         sample_rng,
         start_iter=2,
         num_iterations=12,
-        guidance=None if not (CONTEXT_GUIDANCE or SELF_GUIDANCE_FIDELITY) else guidance_tokens,
+        guidance=None if not (CONTEXT_GUIDANCE or SELF_GUIDANCE_CONFIDENCE) else guidance_tokens,
         codebook=codebook,
         context_guidance=CONTEXT_GUIDANCE,
         self_guidance_style=SELF_GUIDANCE_STYLE,
-        self_guidance_lambda=SELF_GUIDANCE_FIDELITY,
+        self_guidance_lambda=SELF_GUIDANCE_CONFIDENCE,
         )
 
 elif run_mode == 'pmap':
