@@ -321,11 +321,11 @@ def decode_self_guidance_iterate(inputs,
   # Initializes state
   init_state = state_init(inputs, rng, num_iter, start_iter=start_iter)
 
-  if self_guidance is None:
-    self_guidance_weighted = jnp.ones((guidance.shape[0], guidance.shape[0]), dtype=jnp.float32)
-    self_guidance_weighted = jnp.concatenate([jnp.ones_like(self_guidance_weighted[:,:1]), self_guidance_weighted], axis=1)
-  else:
-    self_guidance_weighted = guidance_to_reweight(self_guidance, guidance, jnp.full_like(guidance, confidence))
+  # if self_guidance is None:
+  #   self_guidance_weighted = jnp.ones((guidance.shape[0], guidance.shape[0]), dtype=jnp.float32)
+  #   self_guidance_weighted = jnp.concatenate([jnp.ones_like(self_guidance_weighted[:,:1]), self_guidance_weighted], axis=1)
+  # else:
+  #   self_guidance_weighted = guidance_to_reweight(self_guidance, guidance, jnp.full_like(guidance, confidence))
 
   def loop_cond_fn(state):
     """Beam search loop termination condition."""
@@ -348,10 +348,11 @@ def decode_self_guidance_iterate(inputs,
     masked_guidance = jnp.where(unknown_map, guidance, mask_token_id)
     logits = tokens_to_logits(cur_ids, masked_guidance) # B T Code_tgt
     # Just updates the masked tokens.
-    self_guidance_weighted = guidance_to_reweight(self_guidance, guidance, jnp.full_like(guidance, confidence))
-    self_guidance_weighted = jnp.where(unknown_map[..., None], self_guidance_weighted, 1.)
-    # * Pretty sure we don't ever re-mask a known token, so this should be fine i.e. but we regenerate for convenience (rather than calling global)
-    logits = self_guidance_weighted * logits # * Change
+    # if self_guidance is not None:
+    #   self_guidance_weighted = guidance_to_reweight(self_guidance, guidance, jnp.full_like(guidance, confidence))
+    #   self_guidance_weighted = jnp.where(unknown_map[..., None], self_guidance_weighted, 1.)
+    #   # * Pretty sure we don't ever re-mask a known token, so this should be fine i.e. but we regenerate for convenience (rather than calling global)
+    #   logits = self_guidance_weighted * logits # * Change
 
     rng, sample_rng = jax.random.split(rng, 2)
     # Samples the ids using categorical sampling: [batch_size, seq_length].

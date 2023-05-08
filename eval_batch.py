@@ -19,8 +19,6 @@ import os
 import itertools
 from timeit import default_timer as timer
 from pathlib import Path
-import cv2
-
 import matplotlib.pyplot as plt
 
 import maskgit
@@ -93,13 +91,8 @@ CONTEXT_GUIDANCE = False
 SELF_GUIDANCE_CONFIDENCE = 0.1
 # SELF_GUIDANCE_STYLE = 'l2'
 SELF_GUIDANCE_STYLE = "learned"
-SELF_GUIDANCE_STYLE = "iterate"
 
 image = get_data(fns[0])[SRC]
-
-
-
-
 if MODE == 'bbox':
     bbox_top_left_height_width = '64_32_128_144' # @param
 
@@ -111,21 +104,9 @@ else:
     mask = get_data(fns[0])['mask']
     latent_mask, input_tokens, guidance_tokens, codebook = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
         image, bbox=None, target_label=label, mask=mask)
-
-    # Convert the mask to grayscale
-    gray_mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-    gray_mask = gray_mask.astype(np.uint8)
-
-    # Find contours
-    contours, _ = cv2.findContours(gray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Draw bold outline around the mask (thickness=3)
-    outline_image = image.copy()
-    cv2.drawContours(outline_image, contours, -1, (0, 255, 0), 2)
-
     fig, ax = plt.subplots()
-    plt.imshow(outline_image)
-    ax.imshow(outline_image)
+    plt.imshow(image)
+    ax.imshow(image)
     ax.axis("off")
     plt.title(category)
     # plt.show()
@@ -161,7 +142,6 @@ elif run_mode == 'pmap':
 # and output images.
 composite_images = generator_256.composite_outputs(image, latent_mask, results)
 #-----------------------
-
 visualize_images(composite_images, figsize=(12, 12), )
 # visualize_images(composite_images, figsize=(12, 12), title=f'Temp: {SELF_GUIDANCE_FIDELITY}')
 # visualize_images(composite_images, title=f'outputs')
