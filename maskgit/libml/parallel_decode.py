@@ -418,7 +418,7 @@ def decode_context_guidance(inputs,
   """
   inputs = inputs.astype("int32")
   guidance = guidance.astype("int32")
-  breakpoint() # We changed guidance to not include the class token, how does that affect things? we probably want to pad by one to match input shape
+  # breakpoint() # We changed guidance to not include the class token, how does that affect things? we probably want to pad by one to match input shape
   unknown_number_in_the_beginning = jnp.sum(inputs == mask_token_id, axis=-1)
   # Initializes state
   init_state = state_init_with_logits(inputs, rng, num_iter, codebook_size=codebook_size, start_iter=start_iter)
