@@ -159,7 +159,8 @@ def generate_one_stroke_evaluation(
         ax.imshow(outline_image)
         ax.axis("off")
         plt.title(category)
-        output_path = os.path.join(OUTPUT_DIR, f'cls-{label}_{i}.png')
+        category_cln = category.split(',')[0].split()[1]
+        output_path = os.path.join(OUTPUT_DIR, f'cls_{category_cln}_source_{i}.png')
         plt.savefig(output_path)
         plt.close(fig)
         cache = {}
@@ -171,7 +172,7 @@ def generate_one_stroke_evaluation(
                 context_guidance=mode['context_guidance'],
                 self_guidance_style=mode['self_guidance_style'],
                 self_guidance_confidence=mode.get('tune_confidence', 0.5),
-                tag=mode['tag'],
+                tag=f"{mode['tag']}_{i}",
                 cache_outs=cache
             )
 generate_one_stroke_evaluation(imagenet_index=1, counterfactual=False)

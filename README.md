@@ -68,6 +68,19 @@ We do not compare combinations of self-guidance and context-guidance as context-
 
 We sample 3 ImageNet classes and 1 samples per variant.
 
+Variant | Image
+:---:|:---:
+Source | ![source](./output/cls-1_0.png)
+Baseline | ![baseline](./output/cls_goldfish_baseline.png)
+<!-- Content  | <img src="./data/images/style/starry_night.jpeg" width="200px">) | <img src="./data/images/style/picasso.jpg" width="200px">
+:---:|:---:|:---:
+<img src="./data/images/content/tubingen.jpeg" width="100px"> | ![tubingen_starry](out/rand-seed-0-style-starry_night-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-tubingen-content_layers-['conv_4'].png) | ![tubingen_picasso](out/rand-seed-0-style-picasso-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-tubingen-content_layers-['conv_4'].png)
+<img src="./data/images/content/phipps.jpeg" width="100px"> | ![phipps_starry](out/rand-seed-0-style-starry_night-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-phipps-content_layers-['conv_4'].png) | ![phipps_picasso](out/rand-seed-0-style-picasso-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-phipps-content_layers-['conv_4'].png) -->
+
+Source
+
+Baseline
+
 ## Commentary
 
 
