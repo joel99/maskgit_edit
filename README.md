@@ -1,5 +1,5 @@
 # MaskGIT-Edit
-
+[Full codebase](https://github.com/joel99/maskgit_edit/)
 ## Motivation
 A full image synthesis workflow should allow user guidance at all levels of granularity. Text-based user inputs are suitable for coarse-grained control, but pixel-space markings are a more intuitive means for providing spatially precise user guidance. Note that in this regime, a user is typically fine-tuning small patches within a generated image, so our methods should primarily model the conditional generation of only the edited portions of the image.
 
@@ -64,7 +64,7 @@ I experimented with a few of the aforementioned variants:
 <!-- 2. No promises, but if I have time I'll add the direct usage of the pretrained model with the guidance tokens subbed in for mask tokens. -->
 We do not compare combinations of self-guidance and context-guidance as context-guidance proves too strong a signal to apply directly, and there is no clear way to titrate its influence. It may have been useful for other types of user guidance, such as nearly realistic strokes anyway (e.g. photoshopped glasses)
 
-We sample 3 ImageNet classes and 1 samples per variant.
+We sample a few ImageNet classes, quickly seeing results are not as theorized.
 
 <style>
 table th:first-of-type {
