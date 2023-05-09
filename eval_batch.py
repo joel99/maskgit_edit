@@ -170,6 +170,7 @@ def generate_one_stroke_evaluation(
                 context_guidance=mode['context_guidance'],
                 self_guidance_style=mode['self_guidance_style'],
                 self_guidance_confidence=mode.get('tune_confidence', 0.5),
+                tag=mode['tag'],
                 cache_outs=cache
             )
 generate_one_stroke_evaluation(imagenet_index=1, counterfactual=False)

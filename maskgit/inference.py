@@ -140,7 +140,7 @@ class ImageNet_class_conditional_generator():
                 logits = self.transformer_model.apply(self.transformer_variables, seq, deterministic=True)
                 logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
                 return logits
-            assert not (context_guidance and self_guidance_lambda), "Guidance is mutually exclusive in current implementation."
+            assert not (context_guidance and (self_guidance_lambda and self_guidance_style != "")), "Guidance is mutually exclusive in current implementation."
             if guidance is not None and (context_guidance or (self_guidance_lambda and self_guidance_style != "")):
                 if context_guidance:
                     output_tokens = parallel_decode.decode_context_guidance(
