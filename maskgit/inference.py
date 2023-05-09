@@ -117,7 +117,7 @@ class ImageNet_class_conditional_generator():
         self_guidance_lambda=1.0,
         self_guidance_style="l2", # [iterate, eye, l2, learned]
     ):
-        breakpoint()
+        # breakpoint()
         if self_guidance_style == "iterate":
             def tokens_to_logits(seq, guide):
                 logits = self.transformer_model.apply(self.transformer_variables, seq, guidance_ids=guide, deterministic=True) # TODO use guide
@@ -155,6 +155,7 @@ class ImageNet_class_conditional_generator():
                         start_iter=start_iter,
                     )
                 else:
+                    breakpoint()
                     if self_guidance_style == "learned":
                         assert self.reweight_kernel is not None
                         self_guidance = self.reweight_kernel
