@@ -36,7 +36,7 @@ Thus, MaskGIT does not by default condition in $E$ to sample $X_E$. We must eith
 
 **Non-tuning Heuristics**
 - `Context-guidance`: can be applied by manipulating inference. At each step of ancestral sampling, we replace the previous round's least confident samples with guidance. (See `maskgit/libml/parallel_decode.decode_context_guidance`)
-- `Self-guidance, fixed`: can reweight sampled confidences via a pre-specified distance metric. I use L2.
+- `Self-guidance, fixed`: can reweight sampled confidences via a pre-specified distance metric. I use L2 as a metric. The reweighting can be scaled according to user confidence.
 
 **Tuning**
 - `Self-guidance, learned`: by learning a thin reweighting matrix of size $C \times C$ (representing affinities between the $C$ codes), we can attempt to learn self-guidance without worrying about overfit in the Transformer.
@@ -54,36 +54,49 @@ The open MaskGIT weights are only on ImageNet, so we use those.
 ## Results
 
 We perform a qualitative evaluation on automatically generated "strokes" using an algorithm similar to that described in SDEdit's auto-stroke generation. We use two settings; "stroke inversion" where a stroke-segmented region is assigned the mean color of pixels in the region, and "stroke counterfactual" where the stroke is assigned a randomly generated color. The other various datasets in SDEdit were difficult to compare with as it was unclear to me how to generate those edited images; moreover the pretrained MaskGIT was only for ImageNet. See `make_strokes.py`.
-We compare the aforementioned variants:
+I experimented with a few of the aforementioned variants:
 1. Baseline (no guidance). Should be the most photorealistic.
 2. Context guidance only
-3. Self-guidance fixed: Identity matrix
-4. Self-guidance fixed: Code L2
-5. Self-guidance learned: Code L2 init
-- We observe in this case that the learned weights does not deviate greatly from the original matrix. For example, an initial distance energy of 8 might change to 8.05.
-- For the self-guidance variants, we try 3 confidences each.
-6. Self-guidance, iterative generation.
-7. No promises, but if I have time I'll add the direct usage of the pretrained model with the guidance tokens subbed in for mask tokens.
+3. Self-guidance fixed: Identity matrix / Code L2
+4. Self-guidance learned: Code L2 init
+- We observe in this case that the learned weights does not deviate greatly from the original matrix. For example, an initial distance energy of 8 might change to 8.05. Moreover, identity and code L2 were qualitatively highly similar. Finally, we also note it's very difficult to find a reasonable confidence tuning; I ultimately didn't find this to be useful.
+1. Tuned, iterative generation.
+<!-- 2. No promises, but if I have time I'll add the direct usage of the pretrained model with the guidance tokens subbed in for mask tokens. -->
 We do not compare combinations of self-guidance and context-guidance as context-guidance proves too strong a signal to apply directly, and there is no clear way to titrate its influence. It may have been useful for other types of user guidance, such as nearly realistic strokes anyway (e.g. photoshopped glasses)
 
 We sample 3 ImageNet classes and 1 samples per variant.
 
-Variant | Image
-:---:|:---:
-Source | ![source](./output/cls-1_0.png)
-Baseline | ![baseline](./output/cls_goldfish_baseline.png)
-<!-- Content  | <img src="./data/images/style/starry_night.jpeg" width="200px">) | <img src="./data/images/style/picasso.jpg" width="200px">
-:---:|:---:|:---:
-<img src="./data/images/content/tubingen.jpeg" width="100px"> | ![tubingen_starry](out/rand-seed-0-style-starry_night-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-tubingen-content_layers-['conv_4'].png) | ![tubingen_picasso](out/rand-seed-0-style-picasso-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-tubingen-content_layers-['conv_4'].png)
-<img src="./data/images/content/phipps.jpeg" width="100px"> | ![phipps_starry](out/rand-seed-0-style-starry_night-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-phipps-content_layers-['conv_4'].png) | ![phipps_picasso](out/rand-seed-0-style-picasso-style_layers-['conv_2',%20'conv_3',%20'conv_4',%20'conv_5']-style_weight-100000.0-content-phipps-content_layers-['conv_4'].png) -->
+<style>
+table th:first-of-type {
+    width: 15%;
+}
+table th:nth-of-type(2) {
+    width: 17%;
+}
+table th:nth-of-type(3) {
+    width: 17%;
+}
+table th:nth-of-type(4) {
+    width: 17%;
+}
+table th:nth-of-type(5) {
+    width: 17%;
+}
+table th:nth-of-type(5) {
+    width: 17%;
+}
+</style>
+Source | No guide | Context |  Self: Learned | Self: Learned, full Conf  | Iterative tuning
+|:---:|:---:|:---:|:---:|:---:|:---:
+![source](./output/cls_goldfish_source__1.png) | ![baseline](./output/cls_goldfish_baseline_1.png) | ![context](./output/cls_goldfish_ctx_1.png) | ![self-guidance, identity](./output/cls_goldfish_reweight_1.png) | ![self-guidance, code L2](./output/cls_goldfish_hiweight_1.png) | ![self-guidance, learned](./output/cls_goldfish_reweight_1.png) | ![iterative](./output/cls_goldfish_iterate_1.png)
+![source](./output/cls_goldfish_source__cf_2.png) | ![baseline](./output/cls_goldfish_baseline_cf_2.png) | ![context](./output/cls_goldfish_ctx_cf_2.png) | ![self-guidance, identity](./output/cls_goldfish_reweight_cf_2.png) | ![self-guidance, code L2](./output/cls_goldfish_hiweight_cf_2.png) | ![self-guidance, learned](./output/cls_goldfish_reweight_cf_2.png) | ![iterative](./output/cls_goldfish_iterate_cf_2.png)
+![source](./output/cls_hook_source__0.png) | ![baseline](./output/cls_hook_baseline_0.png) | ![context](./output/cls_hook_ctx_0.png) | ![self-guidance, identity](./output/cls_hook_reweight_0.png) | ![self-guidance, code L2](./output/cls_hook_hiweight_0.png) | ![self-guidance, learned](./output/cls_hook_reweight_0.png) | ![iterative](./output/cls_hook_iterate_0.png)
+![source](./output/cls_hook_source__cf_0.png) | ![baseline](./output/cls_hook_baseline_cf_0.png) | ![context](./output/cls_hook_ctx_cf_0.png) | ![self-guidance, identity](./output/cls_hook_reweight_cf_0.png) | ![self-guidance, code L2](./output/cls_hook_hiweight_cf_0.png) | ![self-guidance, learned](./output/cls_hook_reweight_cf_0.png) | ![iterative](./output/cls_hook_iterate_cf_0.png)
+![source](./output/cls_academic_source__2.png) | ![baseline](./output/cls_academic_baseline_2.png) | ![context](./output/cls_academic_ctx_2.png) | ![self-guidance, identity](./output/cls_academic_reweight_2.png) | ![self-guidance, code L2](./output/cls_academic_hiweight_2.png) | ![self-guidance, learned](./output/cls_academic_reweight_2.png) | ![iterative](./output/cls_academic_iterate_2.png)
+![source](./output/cls_academic_source__cf_2.png) | ![baseline](./output/cls_academic_baseline_cf_2.png) | ![context](./output/cls_academic_ctx_cf_2.png) | ![self-guidance, identity](./output/cls_academic_reweight_cf_2.png) | ![self-guidance, code L2](./output/cls_academic_hiweight_cf_2.png) | ![self-guidance, learned](./output/cls_academic_reweight_cf_2.png) | ![iterative](./output/cls_academic_iterate_cf_2.png)
 
-Source
-
-Baseline
-
-## Commentary
-
+From here, it's pretty easy to see that the methods that attempted strong guidance produce strange artifacts. Context-guidance is way too prescriptive and actually produces uniform colors without updates. Self-guidance with strong temperatures peer into the abyss of generative model latent space, with fractals and textures but no coherence. In these samples, slightly lower confidence self-guidance and iterative tuning are not visibly different. This is true even with counterfactual guidance.
 
 
 ## Summary
-Motivationally, the spatial benefits of MaskGIT are entirely complementary to SDEdit's iterative denoising. Uncertainty is a natural way of trading off fidelity to user guidance with realism. Similarly to diffusion models, it appears MaskGIT may be able to applied iteratively, reusing its own low confidence samples to improve future samples; this appears to be a thematic convergence in my view. Attempts to build at intuitive knob failed; rather we may simply want to adopt the diffusion mindset: if we want more realistic samples, simply extend the inference schedule. Fewer samples will naturally be more faithful to the guidance; the tradeoff is built-in. (I don't formally test this). This tuning is relatively straightforward and beats out the various intuitive baselines I built.
+Motivationally, the spatial benefits of MaskGIT are entirely complementary to SDEdit's iterative denoising. Uncertainty is a natural way of trading off fidelity to user guidance with realism. Unlike diffusion models, however, there is no clear way to iteratively integrate guidance in MaskGIT. A promising idea was simply to tune MaskGIT its own low confidence samples to improve future samples. (This would have been great: if we want more realistic samples, simply extend the inference schedule.) However, this did not yield promising results in these pilot explorations. Moreover, attempts to build at intuitive knob failed.

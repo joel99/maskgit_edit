@@ -40,8 +40,10 @@ def visualize_images_batch(images, title='', figsize_unit=6, output_path="output
   # save to output_path
   plt.suptitle(title)
   plt.tight_layout()
-  plt.savefig(output_path)
-  plt.close()
+  plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+  # clear
+  plt.clf()
+  # plt.close()
 
 
 def visualize_images(images, title='', figsize=(30, 6)):

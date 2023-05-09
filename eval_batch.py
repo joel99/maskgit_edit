@@ -12,6 +12,8 @@ r"""
     4. Randomly subset the remaining tokens using the steps (model might already do this)
 """
 import subprocess
+import argparse
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -75,10 +77,11 @@ def generate_inference(
     image, mask, label, category,
     generator: ImageNet_class_conditional_generator,
     context_guidance=False, # true
-    self_guidance_confidence=0.75,
+    self_guidance_confidence=0.85,
     self_guidance_style="learned", # l2, iterate, eye, ""
     cache_outs={},
     tag="",
+    steps=12,
 ):
     if len(cache_outs) == 4:
         input_tokens = cache_outs['input_tokens']
@@ -97,7 +100,7 @@ def generate_inference(
         input_tokens,
         sample_rng,
         start_iter=2,
-        num_iterations=12,
+        num_iterations=steps,
         guidance=guidance_tokens if (context_guidance or (self_guidance_confidence and self_guidance_style != "")) else None,
         codebook=codebook,
         context_guidance=context_guidance,
@@ -113,14 +116,15 @@ def generate_inference(
     return cache_outs
 
 EVALUATION_MODES = [
-    {'context_guidance': False, 'self_guidance_style': '', 'tune_style': '', 'tag': 'baseline'}, # baseline
-    {'context_guidance': True, 'self_guidance_style': '', 'tune_style': '', 'tag': 'ctx_only'},
-    {'context_guidance': False, 'self_guidance_style': 'eye', 'tune_style': '', 'tag': 'eye'},
-    {'context_guidance': False, 'self_guidance_style': 'l2', 'tune_style': '', 'tag': 'l2'},
-    {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tag': 'reweight'},
-    {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tune_confidence': 0., 'tag': 'reweight_0'}, # Just demonstrate a bad one
-    {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tune_confidence': 1., 'tag': 'reweight_1'}, # Just demonstrate a bad one
-    {'context_guidance': False, 'self_guidance_style': '', 'tune_style': 'iterate', 'tag': 'iterate'},
+    # {'context_guidance': False, 'self_guidance_style': '', 'tune_style': '', 'tag': 'baseline'}, # baseline
+    # {'context_guidance': True, 'self_guidance_style': '', 'tune_style': '', 'tag': 'ctx'},
+    # # {'context_guidance': False, 'self_guidance_style': 'eye', 'tune_style': '', 'tag': 'eye'},
+    # # {'context_guidance': False, 'self_guidance_style': 'l2', 'tune_style': '', 'tag': 'l2'},
+    # {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tag': 'reweight'},
+    # # {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tune_confidence': 0., 'tag': 'reweight_0'}, # Just demonstrate a bad one
+    # {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tune_confidence': 1., 'tag': 'hiweight'}, # Just demonstrate a bad one
+    # {'context_guidance': False, 'self_guidance_style': '', 'tune_style': 'iterate', 'tag': 'iterate'},
+    {'context_guidance': False, 'self_guidance_style': '', 'tune_style': 'iterate', 'tag': 'less', 'steps': 4},
 ]
 
 def generate_one_stroke_evaluation(
@@ -155,13 +159,13 @@ def generate_one_stroke_evaluation(
         outline_image = generate_image_with_mask_outline(image, mask)
 
         fig, ax = plt.subplots()
-        plt.imshow(outline_image)
+        # plt.imshow(outline_image)
         ax.imshow(outline_image)
         ax.axis("off")
-        plt.title(category)
+        # plt.title(category)
         category_cln = category.split(',')[0].split()[1]
-        output_path = os.path.join(OUTPUT_DIR, f'cls_{category_cln}_source_{i}.png')
-        plt.savefig(output_path)
+        output_path = os.path.join(OUTPUT_DIR, f'cls_{category_cln}_source__{"cf_" if counterfactual else ""}{i}.png')
+        plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
         plt.close(fig)
         cache = {}
         for mode in evaluation_modes:
@@ -172,7 +176,16 @@ def generate_one_stroke_evaluation(
                 context_guidance=mode['context_guidance'],
                 self_guidance_style=mode['self_guidance_style'],
                 self_guidance_confidence=mode.get('tune_confidence', 0.5),
-                tag=f"{mode['tag']}_{i}",
-                cache_outs=cache
+                tag=f"{mode['tag']}_{'cf_' if counterfactual else ''}{i}",
+                cache_outs=cache,
+                steps=mode.get('steps', 12),
             )
-generate_one_stroke_evaluation(imagenet_index=1, counterfactual=False)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate stroke evaluation for a specific ImageNet index.")
+    parser.add_argument("--imagenet_index", "-i", type=int, default=1, help="ImageNet index to use for evaluation.")
+    parser.add_argument("--counterfactual", "-c", action="store_true", help="Use counterfactual mode.")
+    args = parser.parse_args()
+
+    generate_one_stroke_evaluation(imagenet_index=args.imagenet_index, counterfactual=args.counterfactual)
