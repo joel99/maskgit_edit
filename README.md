@@ -8,20 +8,27 @@ Supervised tuning of a generative model to allow conditioning on user inputs is 
 ## Approach
 
 The problem formalizes as follows: denote flattened image pixels or patches as $X_{[n]}$, and denote guidance as $G_{E}, E \subset [n]$. Our guided image is thus $X^{(g)} = \{X_{[n]\setminus E}, G_{E}\}$.  Then, we want to use a generative model's pretrained
+
 $$
     p_\theta (X_E | X_{[n] \setminus E})
 $$
+
 To model
+
 $$
     p (X_E | X_{[n] \setminus E}, G_E)
 $$
+
 SDEdit bridges the gap between the two distributions with forward diffusion: under sufficient noise, $G_E$ is indistinguishable from $X_E$. So they sampled a noised guidance
 $
 X^{(g)}(t_0) \sim \mathcal{N}(X^{(g)}; \sigma^2 (t_0) I)
 $, and then directly apply the pretrained reverse diffusion.
 Uncertainty is a great way to fold in user edits and future methods will likely retain the idea; MaskGIT does _not_ pretrain with uncertain inputs, but does let us focus on spatial dependencies. Let's investigate.
 
-First, MaskGIT is a Vector-Quantized Transformer that first encodes image patches into discrete codes. This project, like MaskGIT itself, focuses on the Transformer generative model over code tokens, not pixels. MaskGIT uses beam-search/ancestral sampling to draw from $p(X_E|X_{[n]\setminus E})$ over $K$ steps; each step conditions _only on previously sampled tokens_ and locks in the most confident tokens. To be very specific: by default, MaskGIT proposes a sample for a patch, but will discard it if the confidence is below a threshold. MaskGIT by default will "trust" its conditioning because those were all high confidence.
+First, MaskGIT is a Vector-Quantized Transformer that first encodes image patches into discrete codes. This project, like MaskGIT itself, focuses on the Transformer generative model over code tokens, not pixels. MaskGIT uses beam-search/ancestral sampling to draw from
+$p(X_E|X_{[n]\setminus E})$
+over
+$K$ steps; each step conditions _only on previously sampled tokens_ and locks in the most confident tokens. To be very specific: by default, MaskGIT proposes a sample for a patch, but will discard it if the confidence is below a threshold. MaskGIT by default will "trust" its conditioning because those were all high confidence.
 
 Thus, MaskGIT does not by default condition in $E$ to sample $X_E$. We must either tune the model to do so, or heuristically hack the inference process. We split the conditioning into two pieces: for a particular $X_{j \in E}$, can we use $G_j$ (self-guidance) and $G_{E \setminus j}$ (context-guidance)? We illustrate this in the below figure, and explain our methods with respect to it.
 
