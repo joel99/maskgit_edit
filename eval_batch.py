@@ -75,7 +75,7 @@ def generate_inference(
     image, mask, label, category,
     generator: ImageNet_class_conditional_generator,
     context_guidance=False, # true
-    self_guidance_confidence=0.5,
+    self_guidance_confidence=0.75,
     self_guidance_style="learned", # l2, iterate, eye, ""
     cache_outs={},
     tag="",
@@ -106,15 +106,16 @@ def generate_inference(
         )
 
     composite_images = generator.composite_outputs(image, latent_mask, results)
+    category_cln = category.split(',')[0].split()[1]
     if tag == "":
         tag = f"self_{self_guidance_style}_conf_{self_guidance_confidence}_ctx_{context_guidance}"
-    visualize_images_batch(composite_images, output_path=OUTPUT_DIR / f'cls_{category}_{tag}.png')
+    visualize_images_batch(composite_images, output_path=OUTPUT_DIR / f'cls_{category_cln}_{tag}.png')
     return cache_outs
 
 EVALUATION_MODES = [
     {'context_guidance': False, 'self_guidance_style': '', 'tune_style': '', 'tag': 'baseline'}, # baseline
     {'context_guidance': True, 'self_guidance_style': '', 'tune_style': '', 'tag': 'ctx_only'},
-    {'context_guidance': False, 'self_guidance_style': 'eye', 'tune_style': '', 'tune_confidence': 0., 'tag': 'eye_0'},
+    {'context_guidance': False, 'self_guidance_style': 'eye', 'tune_style': '', 'tag': 'eye'},
     {'context_guidance': False, 'self_guidance_style': 'l2', 'tune_style': '', 'tag': 'l2'},
     {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tag': 'reweight'},
     {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tune_confidence': 0., 'tag': 'reweight_0'}, # Just demonstrate a bad one
