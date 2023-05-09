@@ -26,6 +26,24 @@ from PIL import ImageFilter, Image
 import requests
 import tensorflow.compat.v1 as tf
 
+def visualize_images_batch(images, title='', figsize_unit=6, output_path="output.png"):
+  batch_size, height, width, c = images.shape
+  n_cols = 1
+  n_rows = batch_size
+  fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * figsize_unit, n_rows * figsize_unit))
+  axes = axes.flatten()
+
+  for idx, (image, ax) in enumerate(zip(images, axes)):
+      image = np.clip(image, 0, 1)
+      ax.imshow(image)
+      ax.axis("off")
+  # save to output_path
+  plt.suptitle(title)
+  plt.tight_layout()
+  plt.savefig(output_path)
+  plt.close()
+
+
 def visualize_images(images, title='', figsize=(30, 6)):
   batch_size, height, width, c = images.shape
   n_rows = int(math.sqrt(batch_size))

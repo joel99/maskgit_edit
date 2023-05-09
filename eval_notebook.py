@@ -38,8 +38,8 @@ from maskgit.notebook_utils import (
 download_if_needed()
 
 wandb_id = "ytgj3lyd" # reweight 1e-5
-wandb_id = "om8dz3k5" # reweight 1e-4 - curve has no difference
-wandb_id = "lncehv2l" # iterate
+wandb_id = "om8dz3k5" # reweight 1e-4 - curve has no difference, stepping thru notebook also shows little difference
+# wandb_id = "lncehv2l" # iterate
 tune_style = "iterate" if wandb_id in [
     "lncehv2l",
 ] else "reweight"
@@ -90,15 +90,12 @@ SRC = 'stroke'
 CONTEXT_GUIDANCE = False
 # CONTEXT_GUIDANCE = True
 
-SELF_GUIDANCE_CONFIDENCE = 0.1
+SELF_GUIDANCE_CONFIDENCE = 0.8
 # SELF_GUIDANCE_STYLE = 'l2'
 SELF_GUIDANCE_STYLE = "learned"
-SELF_GUIDANCE_STYLE = "iterate"
+# SELF_GUIDANCE_STYLE = "iterate"
 
 image = get_data(fns[0])[SRC]
-
-
-
 
 if MODE == 'bbox':
     bbox_top_left_height_width = '64_32_128_144' # @param
@@ -121,7 +118,7 @@ else:
 
     # Draw bold outline around the mask (thickness=3)
     outline_image = image.copy()
-    cv2.drawContours(outline_image, contours, -1, (0, 255, 0), 2)
+    cv2.drawContours(outline_image, contours, -1, (0, 1, 0), 2)
 
     fig, ax = plt.subplots()
     plt.imshow(outline_image)
@@ -133,7 +130,7 @@ else:
 pmap_input_tokens = generator_256.pmap_input_tokens(input_tokens)
 
 #%%
-rng, sample_rng = jax.random.split(rng)
+# rng, sample_rng = jax.random.split(rng)
 
 if run_mode == 'normal':
     # starting from [2] to represent the fact that we

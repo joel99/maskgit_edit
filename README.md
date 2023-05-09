@@ -21,18 +21,23 @@ X^{(g)}(t_0) \sim \mathcal{N}(X^{(g)}; \sigma^2 (t_0) I)
 $, and then directly apply the pretrained reverse diffusion.
 Uncertainty is a great way to fold in user edits and future methods will likely retain the idea; MaskGIT does _not_ pretrain with uncertain inputs, but does let us focus on spatial dependencies. Let's investigate.
 
-First, MaskGIT is a Vector-Quantized Transformer that first encodes image patches into discrete codes. This project, like MaskGIT itself, focuses on the Transformer generative model over code tokens, not pixels. MaskGIT uses beam-search/ancestral sampling to draw from $p(X_E|X_{[n]\setminus E})$ over $K$ steps; each step conditions _only on previously sampled tokens_ and locks in the most confident tokens.
+First, MaskGIT is a Vector-Quantized Transformer that first encodes image patches into discrete codes. This project, like MaskGIT itself, focuses on the Transformer generative model over code tokens, not pixels. MaskGIT uses beam-search/ancestral sampling to draw from $p(X_E|X_{[n]\setminus E})$ over $K$ steps; each step conditions _only on previously sampled tokens_ and locks in the most confident tokens. To be very specific: by default, MaskGIT proposes a sample for a patch, but will discard it if the confidence is below a threshold. MaskGIT by default will "trust" its conditioning because those were all high confidence.
 
-Thus, MaskGIT does not by default condition in $E$ to sample $X_E$. We must either tune the model to do so, or heuristically hack the inference process. In either case, we split the conditioning into two pieces: for a particular $X_{j \in E}$, can we use $G_j$ (self-guidance) and $G_{E \setminus j}$ (context-guidance)?
+Thus, MaskGIT does not by default condition in $E$ to sample $X_E$. We must either tune the model to do so, or heuristically hack the inference process. We split the conditioning into two pieces: for a particular $X_{j \in E}$, can we use $G_j$ (self-guidance) and $G_{E \setminus j}$ (context-guidance)? We illustrate this in the below figure, and explain our methods with respect to it.
+
+![f0](./imgs/maskgit_f0.png)
 
 **Non-tuning Heuristics**
 - `Context-guidance`: can be applied by manipulating inference. At each step of ancestral sampling, we replace the previous round's least confident samples with guidance. (See `maskgit/libml/parallel_decode.decode_context_guidance`)
 - `Self-guidance, fixed`: can reweight sampled confidences via a pre-specified distance metric. I use L2.
 
 **Tuning**
-- `Iterative generation`: Both forms of guidance might be achieved if the model can be trained to use low confidence samples -- such as those produced in its own iterative sampling. I implement this by retaining the low-confidence samplesd tokens from an initial iteration and adding their embedding to another iteration (See `maskgit.nets.maskgit_transformer`). Guidance can then be provided at test-time identically to how it's provided in modified training.
 - `Self-guidance, learned`: by learning a thin reweighting matrix of size $C \times C$ (representing affinities between the $C$ codes), we can attempt to learn self-guidance without worrying about overfit in the Transformer.
+- `Iterative generation`: We can also just try to learn the goal function itself. Both forms of guidance might be achieved if the model can be trained to use low confidence samples -- _such as those produced in its own iterative sampling_. I implement this by retaining the low-confidence samplesd tokens from an initial iteration and adding their embedding to another iteration (See `maskgit.nets.maskgit_transformer`). Guidance can then be provided at test-time identically to how it's provided in modified training. In retrospect, it may be possible to accomplish this result zero-shot by ditching the `[MASK]` token mechanism and simply seeing how the model updates the logits for the unrealistic guidance tokens. I did not try this.
 
+I highlight the intuition for why MaskGIT can probably benefit from this tuning using the MaskGIT figure. See how so many of those patches are totally reasonable partial guesses? No need to discard them completely!
+
+![f1](./imgs/maskgit_f1.png)
 
 ### Implementation Note
 We use the open-sourced MaskGIT repo -- unfortunately this only had an inference demo so much effort was directed to setting up a training pipeline. Being in JAX... this killed progress. My end training pipeline kept OOM-ing on my ~10G nodes essentially until a batch size of 1 ([wandb logs](https://wandb.ai/joelye9/maskgit_edit)) which led to very humble fine-tuning efforts.
@@ -51,6 +56,7 @@ We compare the aforementioned variants:
 - We observe in this case that the learned weights does not deviate greatly from the original matrix. For example, an initial distance energy of 8 might change to 8.05.
 - For the self-guidance variants, we try 3 confidences each.
 6. Self-guidance, iterative generation.
+7. No promises, but if I have time I'll add the direct usage of the pretrained model with the guidance tokens subbed in for mask tokens.
 We do not compare combinations of self-guidance and context-guidance as context-guidance proves too strong a signal to apply directly, and there is no clear way to titrate its influence. It may have been useful for other types of user guidance, such as nearly realistic strokes anyway (e.g. photoshopped glasses)
 
 We sample 3 ImageNet classes and 8 samples per variant.
@@ -60,6 +66,4 @@ We sample 3 ImageNet classes and 8 samples per variant.
 
 
 ## Summary
-Motivationally, the spatial benefits of MaskGIT are entirely complementary to SDEdit's iterative denoising. Uncertainty is a natural way of trading off fidelity to user guidance with realism.
-
-This project was technically very difficult
+Motivationally, the spatial benefits of MaskGIT are entirely complementary to SDEdit's iterative denoising. Uncertainty is a natural way of trading off fidelity to user guidance with realism. Similarly to diffusion models, it appears MaskGIT may be able to applied iteratively, reusing its own low confidence samples to improve future samples; this appears to be a thematic convergence in my view. Attempts to build at intuitive knob failed; rather we may simply want to adopt the diffusion mindset: if we want more realistic samples, simply extend the inference schedule. Fewer samples will naturally be more faithful to the guidance; the tradeoff is built-in. (I don't formally test this). This tuning is relatively straightforward and beats out the various intuitive baselines I built.

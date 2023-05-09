@@ -20,10 +20,11 @@ import itertools
 from timeit import default_timer as timer
 from pathlib import Path
 import matplotlib.pyplot as plt
+import cv2
 
 import maskgit
 from maskgit.utils import (
-    visualize_images, read_image_from_file, restore_from_path,
+    visualize_images_batch, read_image_from_file, restore_from_path,
     draw_image_with_bbox, Bbox,
     # draw_image_with_mask # TODO implement a highlight
 )
@@ -35,113 +36,139 @@ from maskgit.notebook_utils import (
 )
 download_if_needed()
 
-wandb_id = "ytgj3lyd" # reweight 1e-5
-wandb_id = "om8dz3k5" # reweight 1e-4 - curve has no difference
-wandb_id = "lncehv2l" # iterate
-tune_style = "iterate" if wandb_id in [
-    "lncehv2l",
-] else "reweight"
+OUTPUT_DIR = Path('./output')
+if not OUTPUT_DIR.exists():
+    OUTPUT_DIR.mkdir()
 
-image_size = 256
-generator_256 = ImageNet_class_conditional_generator(image_size=256, wandb_id=wandb_id, tune_style=tune_style)
-generator_256.maskgit_cf.eval_batch_size = 4
 arbitrary_seed = 42
 rng = jax.random.PRNGKey(arbitrary_seed)
 
-run_mode = 'normal'  #@param ['normal', 'pmap']
-# run_mode = 'pmap'  #@param ['normal', 'pmap']
-
-p_generate_256_samples = generator_256.p_generate_samples()
-p_edit_256_samples = generator_256.p_edit_samples()
-
 category_class_to_id = load_class_to_id_map()
-#%%
-category = imagenet_categories[1]
-label = int(category.split(')')[0])
 
-category_id_pth = f'n{category_class_to_id[label]}'
-split = 'val'
+def load_generator(tune_style="iterate"): # or reweight, or ""
+    if tune_style == "iterate":
+        wandb_id = "lncehv2l"
+    elif tune_style == "reweight":
+        wandb_id = "om8dz3k5"
+    else:
+        wandb_id = ""
+    generator_256 = ImageNet_class_conditional_generator(image_size=256, wandb_id=wandb_id, tune_style=tune_style)
+    generator_256.maskgit_cf.eval_batch_size = 2
+    return generator_256
 
-gt_dir = Path('./data/imagenet_full') / split / category_id_pth
-src_dir = Path('./data/imagenet_stroke/') / split  / category_id_pth / 'stroke'
-mask_dir = Path('./data/imagenet_stroke/') / split / category_id_pth / 'mask'
+def generate_image_with_mask_outline(image, mask):
+    # Convert the mask to grayscale
+    gray_mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    gray_mask = gray_mask.astype(np.uint8)
 
-images = list(src_dir.glob('*'))
-num_examples = 20
-fns = images[:num_examples]
-fns = fns[-1:]
-print(fns)
+    # Find contours
+    contours, _ = cv2.findContours(gray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-def get_data(fn: Path):
-    return {
-        'target': read_image_from_file(gt_dir / fn.name, height=image_size, width=image_size),
-        'stroke': read_image_from_file(src_dir / fn.name, height=image_size, width=image_size),
-        'mask': read_image_from_file(mask_dir / fn.name, height=image_size, width=image_size, ext='png'),
-    }
+    # Draw bold outline around the mask (thickness=3)
+    outline_image = image.copy()
+    cv2.drawContours(outline_image, contours, -1, (0, 255, 0), 3)
 
+    return outline_image
 
-MODE = 'bbox'
-MODE = 'mask'
+rng, sample_rng = jax.random.split(rng) # Only one source of randomness... that's fine
+def generate_inference(
+    image, mask, label, category,
+    generator: ImageNet_class_conditional_generator,
+    context_guidance=False, # true
+    self_guidance_confidence=0.5,
+    self_guidance_style="learned", # l2, iterate, eye, ""
+    cache_outs={},
+    tag="",
+):
+    if len(cache_outs) == 4:
+        input_tokens = cache_outs['input_tokens']
+        guidance_tokens = cache_outs['guidance_tokens']
+        codebook = cache_outs['codebook']
+        latent_mask = cache_outs['latent_mask']
+    else:
+        latent_mask, input_tokens, guidance_tokens, codebook = generator.create_latent_mask_and_input_tokens_for_image_editing(
+            image, bbox=None, target_label=label, mask=mask)
+        cache_outs['input_tokens'] = input_tokens
+        cache_outs['guidance_tokens'] = guidance_tokens
+        cache_outs['codebook'] = codebook
+        cache_outs['latent_mask'] = latent_mask
 
-# SRC = 'target'
-SRC = 'stroke'
-CONTEXT_GUIDANCE = False
-# CONTEXT_GUIDANCE = True
-
-SELF_GUIDANCE_CONFIDENCE = 0.1
-# SELF_GUIDANCE_STYLE = 'l2'
-SELF_GUIDANCE_STYLE = "learned"
-
-image = get_data(fns[0])[SRC]
-if MODE == 'bbox':
-    bbox_top_left_height_width = '64_32_128_144' # @param
-
-    bbox = Bbox(bbox_top_left_height_width)
-    draw_image_with_bbox(image, bbox)
-    latent_mask, input_tokens, guidance_tokens, codebook = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
-        image, bbox, label)
-else:
-    mask = get_data(fns[0])['mask']
-    latent_mask, input_tokens, guidance_tokens, codebook = generator_256.create_latent_mask_and_input_tokens_for_image_editing(
-        image, bbox=None, target_label=label, mask=mask)
-    fig, ax = plt.subplots()
-    plt.imshow(image)
-    ax.imshow(image)
-    ax.axis("off")
-    plt.title(category)
-    # plt.show()
-
-pmap_input_tokens = generator_256.pmap_input_tokens(input_tokens)
-
-#%%
-rng, sample_rng = jax.random.split(rng)
-
-if run_mode == 'normal':
-    # starting from [2] to represent the fact that we
-    # already know some tokens from the given image
-    results = generator_256.generate_samples(
+    results = generator.generate_samples(
         input_tokens,
         sample_rng,
         start_iter=2,
         num_iterations=12,
-        guidance=None if not (CONTEXT_GUIDANCE or SELF_GUIDANCE_CONFIDENCE) else guidance_tokens,
+        guidance=None if not (context_guidance or (self_guidance_confidence or self_guidance_style == "")) else guidance_tokens,
         codebook=codebook,
-        context_guidance=CONTEXT_GUIDANCE,
-        self_guidance_style=SELF_GUIDANCE_STYLE,
-        self_guidance_lambda=SELF_GUIDANCE_CONFIDENCE,
+        context_guidance=context_guidance,
+        self_guidance_style=self_guidance_style,
+        self_guidance_lambda=self_guidance_confidence,
         )
 
-elif run_mode == 'pmap':
-    sample_rngs = jax.random.split(sample_rng, jax.local_device_count())
-    results = p_edit_256_samples(pmap_input_tokens, sample_rngs)
-    # flatten the pmap results
-    results = results.reshape([-1, image_size, image_size, 3])
+    composite_images = generator.composite_outputs(image, latent_mask, results)
+    if tag == "":
+        tag = f"self_{self_guidance_style}_conf_{self_guidance_confidence}_ctx_{context_guidance}"
+    visualize_images_batch(composite_images, output_path=OUTPUT_DIR / f'cls_{category}_{tag}.png')
+    return cache_outs
 
-#-----------------------
-# Post-process by applying a gaussian blur using the input
-# and output images.
-composite_images = generator_256.composite_outputs(image, latent_mask, results)
-#-----------------------
-visualize_images(composite_images, figsize=(12, 12), )
-# visualize_images(composite_images, figsize=(12, 12), title=f'Temp: {SELF_GUIDANCE_FIDELITY}')
-# visualize_images(composite_images, title=f'outputs')
+EVALUATION_MODES = [
+    {'context_guidance': False, 'self_guidance_style': '', 'tune_style': '', 'tag': 'baseline'}, # baseline
+    {'context_guidance': True, 'self_guidance_style': '', 'tune_style': '', 'tag': 'ctx_only'},
+    {'context_guidance': False, 'self_guidance_style': 'eye', 'tune_style': '', 'tune_confidence': 0., 'tag': 'eye_0'},
+    {'context_guidance': False, 'self_guidance_style': 'l2', 'tune_style': '', 'tag': 'l2'},
+    {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tag': 'reweight'},
+    {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tune_confidence': 0., 'tag': 'reweight_0'}, # Just demonstrate a bad one
+    {'context_guidance': False, 'self_guidance_style': 'learned', 'tune_style': 'reweight', 'tune_confidence': 1., 'tag': 'reweight_1'}, # Just demonstrate a bad one
+    {'context_guidance': False, 'self_guidance_style': '', 'tune_style': 'iterate', 'tag': 'iterate'},
+]
+
+def generate_one_stroke_evaluation(
+    imagenet_index=1, imagenet_split='val', counterfactual=False,
+    num_examples=3, image_size=256,
+    evaluation_modes=EVALUATION_MODES
+):
+
+    category = imagenet_categories[imagenet_index]
+    label = int(category.split(')')[0])
+    category_id_pth = f'n{category_class_to_id[label]}'
+    gt_dir = Path('./data/imagenet_full') / imagenet_split / category_id_pth
+    counterfactual_suffix = '_counterfactual' if counterfactual else ''
+    src_dir = Path('./data/imagenet_stroke/') / imagenet_split  / category_id_pth / f'stroke{counterfactual_suffix}'
+    mask_dir = Path('./data/imagenet_stroke/') / imagenet_split / category_id_pth / f'mask{counterfactual_suffix}'
+
+    images = list(src_dir.glob('*'))
+    fns = images[:num_examples]
+
+    def get_data(fn: Path):
+        return {
+            'target': read_image_from_file(gt_dir / fn.name, height=image_size, width=image_size),
+            'stroke': read_image_from_file(src_dir / fn.name, height=image_size, width=image_size),
+            'mask': read_image_from_file(mask_dir / fn.name, height=image_size, width=image_size, ext='png'),
+        }
+
+    # Not at all efficient, c'est la vie
+
+    for i, fn in enumerate(fns):
+        image = get_data(fn)['stroke']
+        mask = get_data(fn)['mask']
+        outline_image = generate_image_with_mask_outline(image, mask)
+
+        fig, ax = plt.subplots()
+        plt.imshow(outline_image)
+        ax.imshow(outline_image)
+        ax.axis("off")
+        plt.title(category)
+        output_path = os.path.join(OUTPUT_DIR, f'cls-{label}_{i}.png')
+        plt.savefig(output_path)
+        plt.close(fig)
+        cache = {}
+        for mode in evaluation_modes:
+            cache = generate_inference(
+                image, mask, label, category,
+                generator=load_generator(tune_style=mode['tune_style']),
+                context_guidance=mode['context_guidance'],
+                self_guidance_style=mode['self_guidance_style'],
+                self_guidance_confidence=mode.get('tune_confidence', 0.5),
+                cache_outs=cache
+            )
+generate_one_stroke_evaluation(imagenet_index=1, counterfactual=False)
