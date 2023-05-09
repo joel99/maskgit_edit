@@ -98,7 +98,7 @@ def generate_inference(
         sample_rng,
         start_iter=2,
         num_iterations=12,
-        guidance=None if not (context_guidance or (self_guidance_confidence or self_guidance_style == "")) else guidance_tokens,
+        guidance=guidance_tokens if (context_guidance or (self_guidance_confidence and self_guidance_style != "")) else None,
         codebook=codebook,
         context_guidance=context_guidance,
         self_guidance_style=self_guidance_style,
@@ -163,6 +163,7 @@ def generate_one_stroke_evaluation(
         plt.close(fig)
         cache = {}
         for mode in evaluation_modes:
+            print(mode)
             cache = generate_inference(
                 image, mask, label, category,
                 generator=load_generator(tune_style=mode['tune_style']),

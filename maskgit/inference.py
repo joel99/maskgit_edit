@@ -141,7 +141,7 @@ class ImageNet_class_conditional_generator():
                 logits = logits[..., :self.maskgit_cf.vqvae.codebook_size]
                 return logits
             assert not (context_guidance and self_guidance_lambda), "Guidance is mutually exclusive in current implementation."
-            if guidance is not None:
+            if guidance is not None and (context_guidance or (self_guidance_lambda and self_guidance_style != "")):
                 if context_guidance:
                     output_tokens = parallel_decode.decode_context_guidance(
                         input_tokens,
@@ -155,7 +155,6 @@ class ImageNet_class_conditional_generator():
                         start_iter=start_iter,
                     )
                 else:
-                    breakpoint()
                     if self_guidance_style == "learned":
                         assert self.reweight_kernel is not None
                         self_guidance = self.reweight_kernel
